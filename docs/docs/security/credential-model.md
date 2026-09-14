@@ -17,7 +17,7 @@ Relay assumes that its database, backup files, imported `.rdp` files, frontend, 
 
 ## External client boundary
 
-Version 1 launches an installed RDP client. Relay can supply sanitized connection settings, username, and domain, but it does not pass a stored password through command-line arguments or `.rdp` files. Authentication remains in the external client; a separate deliberate copy action may be offered later with timed clipboard clearing.
+Version 1 launches an installed RDP client. Relay never puts a stored password in command-line arguments or `.rdp` files. On Windows, just before launching Remote Desktop Connection, it writes the saved credential to that user's native `TERMSRV/<host>` Credential Manager entry, which `mstsc` reads itself. Other platforms authenticate in the external client; a separate deliberate copy action may be offered later with timed clipboard clearing.
 
 ## Import boundary
 

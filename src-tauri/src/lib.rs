@@ -896,6 +896,31 @@ impl Library {
                 return Err(error);
             }
         };
+        // mstsc reads saved RDP credentials from Windows Credential Manager.
+        // Populate its per-target entry immediately before launch so the secret
+        // never has to be passed through a process argument or RDP file.
+        #[cfg(target_os = "windows")]
+        if support.id == "mstsc" {
+            if let Some(credential_id) = connection.credential_id.as_deref() {
+                let prepared = self.credential_by_id(credential_id).and_then(|credential| {
+                    get_secret(credential_id).and_then(|mut password| {
+                        let result =
+                            store_windows_rdp_credential(&connection, &credential, &password);
+                        clear_secret(&mut password);
+                        result
+                    })
+                });
+                if let Err(error) = prepared {
+                    self.record_launch(
+                        connection_id,
+                        support.id.clone(),
+                        false,
+                        Some(error.code.clone()),
+                    )?;
+                    return Err(error);
+                }
+            }
+        }
         let result = launch_with_adapter(&support.id, &connection);
         match &result {
             Ok(_) => self.record_launch(connection_id, support.id.clone(), true, None)?,
@@ -916,6 +941,23 @@ impl Library {
         .into_iter()
         .find(|item| item.id == id)
         .ok_or_else(|| RelayError::validation("Connection was not found."))
+    }
+    #[cfg(target_os = "windows")]
+    fn credential_by_id(&self, id: &str) -> Result<CredentialReference, RelayError> {
+        let db = self.db();
+        db.query_row(
+            "SELECT id,client_id,label,username,domain,archived FROM credentials WHERE id=?1 AND deleted_at IS NULL",
+            [id],
+            |row| Ok(CredentialReference {
+                id: row.get(0)?,
+                client_id: row.get(1)?,
+                label: row.get(2)?,
+                username: row.get(3)?,
+                domain: row.get(4)?,
+                archived: row.get(5)?,
+            }),
+        )
+        .map_err(|_| RelayError::validation("The saved credential was not found."))
     }
 }
 
@@ -1097,6 +1139,126 @@ fn rdp_url(connection: &Connection) -> String {
         connection.port
     )
 }
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_rdp_credential_target(host: &str) -> String {
+    format!("TERMSRV/{host}")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_rdp_username(
+    connection: &Connection,
+    credential: &CredentialReference,
+) -> Result<String, RelayError> {
+    let username = credential
+        .username
+        .as_deref()
+        .or(connection.username.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            RelayError::validation(
+                "A saved credential needs a username to sign in to Windows Remote Desktop.",
+            )
+        })?;
+    if username.contains('\\') || username.contains('@') {
+        return Ok(username.to_owned());
+    }
+    let domain = credential
+        .domain
+        .as_deref()
+        .or(connection.domain.as_deref());
+    Ok(domain.filter(|value| !value.trim().is_empty()).map_or_else(
+        || username.to_owned(),
+        |domain| format!("{domain}\\{username}"),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn clear_secret(secret: &mut String) {
+    // Replacing UTF-8 bytes with NUL bytes keeps the String valid while
+    // preventing the retrieved secret from remaining in its allocation.
+    unsafe { secret.as_mut_vec().fill(0) };
+}
+
+#[cfg(target_os = "windows")]
+fn store_windows_rdp_credential(
+    connection: &Connection,
+    credential: &CredentialReference,
+    password: &str,
+) -> Result<(), RelayError> {
+    #[repr(C)]
+    struct FileTime {
+        low_date_time: u32,
+        high_date_time: u32,
+    }
+    #[repr(C)]
+    struct CredentialW {
+        flags: u32,
+        credential_type: u32,
+        target_name: *mut u16,
+        comment: *mut u16,
+        last_written: FileTime,
+        credential_blob_size: u32,
+        credential_blob: *mut u8,
+        persist: u32,
+        attribute_count: u32,
+        attributes: *mut std::ffi::c_void,
+        target_alias: *mut u16,
+        user_name: *mut u16,
+    }
+    #[link(name = "Advapi32")]
+    extern "system" {
+        fn CredWriteW(credential: *const CredentialW, flags: u32) -> i32;
+    }
+
+    const CRED_TYPE_DOMAIN_PASSWORD: u32 = 2;
+    const CRED_PERSIST_LOCAL_MACHINE: u32 = 2;
+
+    let mut target = windows_rdp_credential_target(&connection.host)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut username = windows_rdp_username(connection, credential)?
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let password_blob_size = u32::try_from(
+        password.encode_utf16().count() * std::mem::size_of::<u16>(),
+    )
+    .map_err(|_| {
+        RelayError::vault("The saved password is too large for Windows Credential Manager.")
+    })?;
+    let mut password_blob = password.encode_utf16().collect::<Vec<_>>();
+    let native_credential = CredentialW {
+        flags: 0,
+        credential_type: CRED_TYPE_DOMAIN_PASSWORD,
+        target_name: target.as_mut_ptr(),
+        comment: std::ptr::null_mut(),
+        last_written: FileTime {
+            low_date_time: 0,
+            high_date_time: 0,
+        },
+        credential_blob_size: password_blob_size,
+        credential_blob: password_blob.as_mut_ptr().cast(),
+        persist: CRED_PERSIST_LOCAL_MACHINE,
+        attribute_count: 0,
+        attributes: std::ptr::null_mut(),
+        target_alias: std::ptr::null_mut(),
+        user_name: username.as_mut_ptr(),
+    };
+    // CredWriteW copies the data synchronously. Clear the temporary UTF-16
+    // password buffer before returning on either outcome.
+    let written = unsafe { CredWriteW(&native_credential, 0) } != 0;
+    password_blob.fill(0);
+    if written {
+        Ok(())
+    } else {
+        Err(RelayError::vault(
+            "Relay could not prepare the saved credential for Windows Remote Desktop.",
+        ))
+    }
+}
+
 fn adapter_support_matrix() -> Vec<AdapterSupport> {
     let platform = std::env::consts::OS;
     vec![
@@ -1105,10 +1267,8 @@ fn adapter_support_matrix() -> Vec<AdapterSupport> {
             label: "Windows Remote Desktop Connection".into(),
             available: platform == "windows" && executable_available("mstsc"),
             supports_display: true,
-            // mstsc has no command-line option for a username. Relay starts a
-            // credential prompt instead of using a temporary RDP profile.
-            supports_username: false,
-            notes: "Uses mstsc with direct non-secret arguments.".into(),
+            supports_username: true,
+            notes: "Uses Windows Credential Manager for saved credentials and direct non-secret launch arguments.".into(),
         },
         AdapterSupport {
             id: "macos-open".into(),
@@ -1151,10 +1311,6 @@ fn adapter_command(
                 }
                 _ => {}
             }
-            // Relay deliberately does not hand a password to mstsc. Prompting
-            // here preserves the generated-profile behavior without creating
-            // a temporary file that Windows must load.
-            command.arg("/prompt");
             Ok(command)
         }
         "xfreerdp" => {
@@ -1669,6 +1825,29 @@ mod tests {
         );
     }
     #[test]
+    fn windows_rdp_credential_uses_the_native_target_and_qualified_username() {
+        let connection = Connection {
+            domain: Some("CONTOSO".into()),
+            ..connection()
+        };
+        let credential = CredentialReference {
+            id: "credential".into(),
+            client_id: "client".into(),
+            label: "Administrator".into(),
+            username: Some("admin".into()),
+            domain: Some("FABRIKAM".into()),
+            archived: false,
+        };
+        assert_eq!(
+            windows_rdp_credential_target(&connection.host),
+            "TERMSRV/gateway.example.test"
+        );
+        assert_eq!(
+            windows_rdp_username(&connection, &credential).unwrap(),
+            "FABRIKAM\\admin"
+        );
+    }
+    #[test]
     fn temporary_rdp_profile_is_sanitized_protected_and_cleaned_up() {
         let connection = Connection {
             notes: "password: do not disclose".into(),
@@ -1696,7 +1875,7 @@ mod tests {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            ["/v:gateway.example.test:3389", "/prompt"]
+            ["/v:gateway.example.test:3389"]
         );
         let profile = protected_rdp_profile(&connection()).unwrap();
         let macos = adapter_command("macos-open", &connection(), Some(profile.as_ref())).unwrap();

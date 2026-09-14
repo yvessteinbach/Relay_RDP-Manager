@@ -13,12 +13,12 @@ Run these checks on a controlled test target that accepts a non-production test 
 1. Create a client and save one connection with the controlled target's hostname, port, optional username, and display setting.
 2. Import an `.rdp` file for the same target that includes a password field and one unsupported setting. Confirm the review warns about both and the saved connection contains neither secret data nor the unsupported setting.
 3. Export the saved connection. Inspect the export and confirm it has the target, optional username/domain, display setting, and `prompt for credentials`, but no password, notes, credential reference, gateway secret, or unsupported setting.
-4. Start the connection and authenticate only in the external RDP client. Confirm Relay records a successful launch without showing a password.
+4. Start the connection. When it has a saved credential on Windows, confirm Remote Desktop Connection signs in without asking for that password. Confirm Relay records a successful launch without showing a password.
 
 ## Windows
 
 - Use a supported Windows build with **Remote Desktop Connection** (`mstsc`) available on `PATH`.
-- Select the connection's **Connect** action and confirm `mstsc` opens the controlled target using the saved display setting and prompts for credentials.
+- Select the connection's **Connect** action and confirm `mstsc` opens the controlled target using the saved display setting. With a saved username and password, it should use the credential automatically; without one, it should prompt for credentials.
 - Confirm no `relay-*.rdp` file is created in the user's temporary directory; Windows launches use `mstsc`'s direct arguments.
 - Temporarily remove `mstsc` from `PATH` or test a machine without it. Confirm Relay shows the clear no-supported-client state and records a categorized failed launch.
 
