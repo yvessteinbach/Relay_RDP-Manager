@@ -20,10 +20,10 @@ Use **Export RDP** from a connection’s detail page. The exported file contains
 
 | Platform | Adapter                   | Launch method                                    |
 | -------- | ------------------------- | ------------------------------------------------ |
-| Windows  | Remote Desktop Connection | `mstsc` with a sanitized temporary RDP file      |
-| macOS    | Registered RDP client     | macOS `open` with a sanitized temporary RDP file |
+| Windows  | Remote Desktop Connection | `mstsc` with direct target and display arguments |
+| macOS    | Windows App or a registered RDP client | Windows App direct link, or macOS `open` with a sanitized temporary RDP file |
 | Linux    | FreeRDP                   | `xfreerdp` with direct non-secret arguments      |
 
-Relay detects the available adapter and reports a clear unavailable state when it cannot find one. It never uses a shell to start a client. Temporary RDP files are owner-only on Unix and are removed after the launched process exits.
+Relay detects the available adapter and reports a clear unavailable state when it cannot find one. It never uses a shell to start a client. On Windows, Relay uses `mstsc`'s native arguments rather than a temporary RDP file, avoiding local RDP-file policy and handler failures. Temporary RDP files are owner-only on Unix and are removed after the launched process exits.
 
-The macOS adapter follows the application registered to open `.rdp` files. Configure that association with the RDP client your organization supports before launching.
+On macOS, Relay launches the current Microsoft **Windows App** directly when it is installed. Otherwise, it follows the application registered to open `.rdp` files. Install Windows App from the Mac App Store, or configure that association with the RDP client your organization supports before launching.

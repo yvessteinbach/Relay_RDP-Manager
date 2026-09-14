@@ -18,8 +18,8 @@ Run these checks on a controlled test target that accepts a non-production test 
 ## Windows
 
 - Use a supported Windows build with **Remote Desktop Connection** (`mstsc`) available on `PATH`.
-- Select the connection's **Connect** action and confirm `mstsc` opens the controlled target using the saved display setting and username.
-- While the client is open, locate the temporary `relay-*.rdp` file in the user's temporary directory. Confirm it contains only the sanitized export. After the client exits, confirm the file is gone.
+- Select the connection's **Connect** action and confirm `mstsc` opens the controlled target using the saved display setting and prompts for credentials.
+- Confirm no `relay-*.rdp` file is created in the user's temporary directory; Windows launches use `mstsc`'s direct arguments.
 - Temporarily remove `mstsc` from `PATH` or test a machine without it. Confirm Relay shows the clear no-supported-client state and records a categorized failed launch.
 
 ## macOS

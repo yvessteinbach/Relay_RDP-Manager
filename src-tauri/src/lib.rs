@@ -1064,6 +1064,39 @@ fn executable_available(name: &str) -> bool {
         })
     })
 }
+fn macos_windows_app_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("open");
+        command
+            .args(["-Ra", "Windows App"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        command.status().is_ok_and(|status| status.success())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+fn rdp_url(connection: &Connection) -> String {
+    let encoded_host = connection
+        .host
+        .bytes()
+        .fold(String::new(), |mut value, byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
+                value.push(byte as char);
+            } else {
+                use std::fmt::Write;
+                let _ = write!(value, "%{byte:02X}");
+            }
+            value
+        });
+    format!(
+        "rdp://full%20address=s%3A{encoded_host}%3A{}",
+        connection.port
+    )
+}
 fn adapter_support_matrix() -> Vec<AdapterSupport> {
     let platform = std::env::consts::OS;
     vec![
@@ -1072,16 +1105,22 @@ fn adapter_support_matrix() -> Vec<AdapterSupport> {
             label: "Windows Remote Desktop Connection".into(),
             available: platform == "windows" && executable_available("mstsc"),
             supports_display: true,
-            supports_username: true,
-            notes: "Uses mstsc with a temporary, sanitized RDP file.".into(),
+            // mstsc has no command-line option for a username. Relay starts a
+            // credential prompt instead of using a temporary RDP profile.
+            supports_username: false,
+            notes: "Uses mstsc with direct non-secret arguments.".into(),
         },
         AdapterSupport {
             id: "macos-open".into(),
-            label: "Registered macOS RDP client".into(),
+            label: "Windows App or registered macOS RDP client".into(),
             available: platform == "macos" && executable_available("open"),
             supports_display: true,
-            supports_username: true,
-            notes: "Opens a sanitized RDP file with the macOS registered application.".into(),
+            supports_username: !macos_windows_app_available(),
+            notes: if macos_windows_app_available() {
+                "Uses the installed Windows App with a direct RDP link.".into()
+            } else {
+                "Opens a sanitized RDP file with the macOS registered application.".into()
+            },
         },
         AdapterSupport {
             id: "xfreerdp".into(),
@@ -1099,6 +1138,25 @@ fn adapter_command(
     profile: Option<&Path>,
 ) -> Result<Command, RelayError> {
     match adapter {
+        "mstsc" => {
+            let mut command = Command::new("mstsc");
+            command.arg(format!("/v:{}:{}", connection.host, connection.port));
+            match connection.display.as_str() {
+                "Full screen" => {
+                    command.arg("/f");
+                }
+                "Multi-monitor" => {
+                    command.arg("/f");
+                    command.arg("/multimon");
+                }
+                _ => {}
+            }
+            // Relay deliberately does not hand a password to mstsc. Prompting
+            // here preserves the generated-profile behavior without creating
+            // a temporary file that Windows must load.
+            command.arg("/prompt");
+            Ok(command)
+        }
         "xfreerdp" => {
             let mut c = Command::new("xfreerdp");
             c.arg(format!("/v:{}:{}", connection.host, connection.port));
@@ -1116,22 +1174,22 @@ fn adapter_command(
             }
             Ok(c)
         }
-        "mstsc" | "macos-open" => {
+        "macos-open" => {
+            if macos_windows_app_available() {
+                let mut command = Command::new("open");
+                command.args(["-n", "-a", "Windows App", "--"]);
+                command.arg(rdp_url(connection));
+                return Ok(command);
+            }
             let profile = profile.ok_or_else(|| RelayError {
                 code: "temporary_file_error".into(),
                 message: "Relay could not create a protected temporary RDP file.".into(),
             })?;
-            if adapter == "mstsc" {
-                let mut command = Command::new("mstsc");
-                command.arg(profile);
-                Ok(command)
-            } else {
-                let mut command = Command::new("open");
-                // -W keeps the profile until the registered client exits, rather
-                // than deleting it as soon as the macOS `open` utility returns.
-                command.args(["-W", "--"]).arg(profile);
-                Ok(command)
-            }
+            let mut command = Command::new("open");
+            // -W keeps the profile until the registered client exits, rather
+            // than deleting it as soon as the macOS `open` utility returns.
+            command.args(["-W", "--"]).arg(profile);
+            Ok(command)
         }
         _ => Err(RelayError {
             code: "client_not_found".into(),
@@ -1247,7 +1305,10 @@ fn protected_rdp_profile(connection: &Connection) -> Result<tempfile::TempPath, 
 }
 
 fn launch_with_adapter(adapter: &str, connection: &Connection) -> Result<LaunchResult, RelayError> {
-    let profile = matches!(adapter, "mstsc" | "macos-open")
+    // Windows Remote Desktop accepts the target and display settings as native
+    // arguments. Prefer that route so a local policy or a damaged RDP-file
+    // handler cannot prevent Relay from starting a connection.
+    let profile = (adapter == "macos-open" && !macos_windows_app_available())
         .then(|| protected_rdp_profile(connection))
         .transpose()?;
     let mut command = adapter_command(adapter, connection, profile.as_deref())?;
@@ -1596,6 +1657,18 @@ mod tests {
         assert!(!text.to_lowercase().contains("password 51"));
     }
     #[test]
+    fn windows_app_link_escapes_the_rdp_target() {
+        let connection = Connection {
+            host: "[2001:db8::1]".into(),
+            port: 3390,
+            ..connection()
+        };
+        assert_eq!(
+            rdp_url(&connection),
+            "rdp://full%20address=s%3A%5B2001%3Adb8%3A%3A1%5D%3A3390"
+        );
+    }
+    #[test]
     fn temporary_rdp_profile_is_sanitized_protected_and_cleaned_up() {
         let connection = Connection {
             notes: "password: do not disclose".into(),
@@ -1616,16 +1689,36 @@ mod tests {
     }
     #[test]
     fn launch_commands_use_direct_arguments_and_wait_for_macos_client() {
+        let mstsc = adapter_command("mstsc", &connection(), None).unwrap();
+        assert_eq!(mstsc.get_program().to_string_lossy(), "mstsc");
+        assert_eq!(
+            mstsc
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["/v:gateway.example.test:3389", "/prompt"]
+        );
         let profile = protected_rdp_profile(&connection()).unwrap();
         let macos = adapter_command("macos-open", &connection(), Some(profile.as_ref())).unwrap();
         assert_eq!(macos.get_program().to_string_lossy(), "open");
-        assert_eq!(
-            macos
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()[..2],
-            ["-W", "--"]
-        );
+        let macos_args = macos
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        if macos_windows_app_available() {
+            assert_eq!(
+                macos_args,
+                [
+                    "-n",
+                    "-a",
+                    "Windows App",
+                    "--",
+                    "rdp://full%20address=s%3Agateway.example.test%3A3389"
+                ]
+            );
+        } else {
+            assert_eq!(macos_args[..2], ["-W", "--"]);
+        }
         let freerdp = adapter_command("xfreerdp", &connection(), None).unwrap();
         assert_eq!(freerdp.get_program().to_string_lossy(), "xfreerdp");
         assert_eq!(
