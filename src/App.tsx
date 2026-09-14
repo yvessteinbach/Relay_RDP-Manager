@@ -113,6 +113,17 @@ type Credential = {
   domain?: string | null;
 };
 type VaultStatus = { available: boolean; platform: string; message: string };
+type BackupArchive = {
+  formatVersion: number;
+  createdAt: number;
+  checksum: string;
+  data: unknown;
+};
+type RestoreResult = {
+  safetyBackup: BackupArchive;
+  restoredConnections: number;
+  credentialPasswordsRestored: boolean;
+};
 type LaunchHistory = {
   id: number;
   connectionId: string;
@@ -226,6 +237,7 @@ function App() {
   const [connectionPage, setConnectionPage] = useState(1);
   const [connectionPageSize, setConnectionPageSize] = useState(10);
   const [editMessage, setEditMessage] = useState("");
+  const [backupMessage, setBackupMessage] = useState("");
   useEffect(() => {
     const loadLibrary = async () => {
       try {
@@ -283,6 +295,60 @@ function App() {
     setActivePage(page);
     setQuery("");
     setConnectionPage(1);
+  };
+  const downloadBackup = (archive: BackupArchive, prefix = "relay-backup") => {
+    const blob = new Blob([JSON.stringify(archive, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${prefix}-${new Date(archive.createdAt * 1000)
+      .toISOString()
+      .slice(0, 10)}.relay-backup.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+  const createBackup = async () => {
+    try {
+      const archive = await invoke<BackupArchive>("create_backup");
+      downloadBackup(archive);
+      setBackupMessage(
+        "Backup downloaded. It excludes passwords stored by your operating system.",
+      );
+    } catch {
+      setBackupMessage(
+        "Relay could not create a backup. Run this from the desktop application and try again.",
+      );
+    }
+  };
+  const restoreBackup = async (file: File) => {
+    try {
+      const archive = JSON.parse(await file.text()) as BackupArchive;
+      const result = await invoke<RestoreResult>("restore_backup", { archive });
+      downloadBackup(result.safetyBackup, "relay-pre-restore-safety-backup");
+      const [storedClients, storedConnections] = await Promise.all([
+        invoke<Client[]>("list_clients"),
+        invoke<StoredConnection[]>("list_connections", {
+          query: { text: "", includeArchived: false },
+        }),
+      ]);
+      setClients(storedClients);
+      setConnections(
+        storedConnections.map((connection) => ({
+          ...connection,
+          username: connection.username ?? "",
+          display: connection.display || "Use RDP client default",
+        })),
+      );
+      setBackupMessage(
+        `Restore complete: ${result.restoredConnections} connection${result.restoredConnections === 1 ? "" : "s"}. A pre-restore safety backup was downloaded. Passwords were not restored; enter them again if needed.`,
+      );
+    } catch {
+      setBackupMessage(
+        "Restore was not applied. Check that this is an unmodified Relay backup and try again.",
+      );
+    }
   };
   const createClient = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1663,6 +1729,51 @@ function App() {
                 )}
               </Stack>
             </Tile>
+            <Tile>
+              <Stack gap={5}>
+                <div>
+                  <h2 className="cds--heading-03">Backup and restore</h2>
+                  <p className="cds--body-01">
+                    Backups contain your library settings and launch history.
+                    They never contain passwords from your operating system
+                    credential store.
+                  </p>
+                </div>
+                <ButtonSet>
+                  <Button onClick={() => void createBackup()}>
+                    Download backup
+                  </Button>
+                  <FileUploaderButton
+                    labelText="Restore backup"
+                    accept={[".json", ".relay-backup.json"]}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (
+                        file &&
+                        window.confirm(
+                          "Restore replaces the current Relay library. Relay will download a safety backup first. Continue?",
+                        )
+                      )
+                        void restoreBackup(file);
+                    }}
+                  />
+                </ButtonSet>
+                {backupMessage ? (
+                  <InlineNotification
+                    hideCloseButton
+                    lowContrast
+                    kind={
+                      backupMessage.startsWith("Restore was") ||
+                      backupMessage.startsWith("Relay could")
+                        ? "error"
+                        : "success"
+                    }
+                    title="Backup status"
+                    subtitle={backupMessage}
+                  />
+                ) : null}
+              </Stack>
+            </Tile>
           </Stack>
         </section>
       );
@@ -1689,7 +1800,7 @@ function App() {
     <Theme theme={theme}>
       <Header aria-label="Relay">
         <Tag className="relay-stage-tag" type="blue">
-          Stage 3 — RDP adapters
+          Stage 5 — Public beta
         </Tag>
       </Header>
       <SideNav aria-label="Primary navigation" expanded isPersistent>

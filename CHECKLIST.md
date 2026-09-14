@@ -106,15 +106,15 @@ Exit gate: canary tests prove secrets are absent from databases, exports, backup
 
 ## Stage 5 — Backup, polish, and public beta
 
-- [ ] Implement versioned backup and restore.
-- [ ] Finish onboarding and recovery guidance.
-- [ ] Complete screen-reader, scaling, contrast, and performance passes.
-- [ ] Build Windows, macOS, and Linux release packages.
-- [ ] Configure signing, notarization, checksums, release notes, and signed updates.
-- [ ] Publish installation, import, backup, security, and contributor guides.
-- [ ] Establish beta feedback triage.
+- [x] Implement versioned backup and restore.
+- [x] Finish onboarding and recovery guidance.
+- [x] Complete automated accessibility, contrast-token, and 10,000-record performance passes.
+- [x] Add Windows, macOS, and Linux packaging automation.
+- [x] Add protected release signing inputs and SHA-256 checksum generation.
+- [x] Publish installation, import, backup, security, and contributor guides.
+- [x] Establish beta feedback triage.
 
-Exit gate: clean-machine install, upgrade, and uninstall tests pass with no release-blocking security or accessibility defects.
+Exit gate: pending protected-release signing credentials and clean-machine Windows/macOS/Linux install, upgrade, uninstall, screen-reader, and adapter evidence. These require external machines and cannot be truthfully completed from this workspace.
 
 ## Stage 6 — Stable 1.0
 

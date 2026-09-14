@@ -11,7 +11,7 @@ Relay assumes that its database, backup files, imported `.rdp` files, frontend, 
 ## Secret boundary
 
 - SQLite stores credential labels, usernames, domains, and opaque secret references.
-- Password values go only to the operating system credential store.
+- Password values go only to the operating system credential store. Backup archives retain credential labels and references only; they never include password values.
 - Passwords must not appear in logs, backups, `.rdp` exports, process arguments, crash reports, or long-lived frontend state.
 - Saving a password remains optional.
 

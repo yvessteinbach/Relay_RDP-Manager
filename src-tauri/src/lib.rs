@@ -1,9 +1,10 @@
 use rusqlite::{params, Connection as SqliteConnection};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -11,6 +12,7 @@ use std::{
 use tauri::Manager;
 
 const LATEST_SCHEMA_VERSION: i64 = 3;
+const BACKUP_FORMAT_VERSION: u32 = 1;
 const VAULT_SERVICE: &str = "app.relay.rdp";
 fn now() -> i64 {
     SystemTime::now()
@@ -256,8 +258,40 @@ pub struct ImportCommit {
     pub replace_connection_id: Option<String>,
 }
 
+/// A portable, secret-free archive. Credential metadata is retained so that
+/// connections remain linked after restore, but passwords remain in the OS
+/// vault and must be entered again if the vault is unavailable.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupArchive {
+    pub format_version: u32,
+    pub created_at: i64,
+    pub checksum: String,
+    pub data: BackupData,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupData {
+    pub clients: Vec<Client>,
+    pub sites: Vec<Site>,
+    pub folders: Vec<Folder>,
+    pub credentials: Vec<CredentialReference>,
+    pub gateways: Vec<Gateway>,
+    pub tags: Vec<Tag>,
+    pub connections: Vec<Connection>,
+    pub launch_history: Vec<LaunchHistory>,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreResult {
+    pub safety_backup: BackupArchive,
+    pub restored_connections: usize,
+    pub credential_passwords_restored: bool,
+}
+
 pub struct Library {
     database: Mutex<SqliteConnection>,
+    database_path: PathBuf,
 }
 
 fn vault_entry(id: &str) -> Result<keyring::Entry, RelayError> {
@@ -307,13 +341,15 @@ fn redact_diagnostic(text: &str, secret: &str) -> String {
 }
 impl Library {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RelayError> {
-        let database = SqliteConnection::open(path).map_err(RelayError::database)?;
+        let database_path = path.as_ref().to_path_buf();
+        let database = SqliteConnection::open(&database_path).map_err(RelayError::database)?;
         database
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(RelayError::database)?;
         migrate(&database)?;
         Ok(Self {
             database: Mutex::new(database),
+            database_path,
         })
     }
     fn db(&self) -> std::sync::MutexGuard<'_, SqliteConnection> {
@@ -634,6 +670,89 @@ impl Library {
         }
         tx.commit().map_err(RelayError::database)?;
         Ok(item)
+    }
+    fn backup_data(&self) -> Result<BackupData, RelayError> {
+        let db = self.db();
+        let mut history = db.prepare("SELECT id,connection_id,occurred_at,adapter,success,category FROM launch_history ORDER BY id")
+            .map_err(RelayError::database)?;
+        let launch_history = history
+            .query_map([], |r| {
+                Ok(LaunchHistory {
+                    id: r.get(0)?,
+                    connection_id: r.get(1)?,
+                    occurred_at: r.get(2)?,
+                    adapter: r.get(3)?,
+                    success: r.get(4)?,
+                    category: r.get(5)?,
+                })
+            })
+            .map_err(RelayError::database)?
+            .collect::<Result<_, _>>()
+            .map_err(RelayError::database)?;
+        drop(history);
+        drop(db);
+        Ok(BackupData {
+            clients: self.list_clients()?,
+            sites: self.list_sites(None)?,
+            folders: self.list_folders(None)?,
+            credentials: self.list_credentials(None)?,
+            gateways: self.list_gateways(None)?,
+            tags: self.list_tags()?,
+            connections: self.list_connections(ConnectionQuery {
+                include_archived: true,
+                ..Default::default()
+            })?,
+            launch_history,
+        })
+    }
+    pub fn create_backup(&self) -> Result<BackupArchive, RelayError> {
+        let data = self.backup_data()?;
+        Ok(BackupArchive {
+            format_version: BACKUP_FORMAT_VERSION,
+            created_at: now(),
+            checksum: backup_checksum(&data)?,
+            data,
+        })
+    }
+    pub fn restore_backup(&self, archive: BackupArchive) -> Result<RestoreResult, RelayError> {
+        validate_backup(&archive)?;
+        // Validate every relationship against a clean, current-schema library
+        // before the live library is touched.
+        let mut validation = SqliteConnection::open_in_memory().map_err(RelayError::database)?;
+        validation
+            .pragma_update(None, "foreign_keys", "ON")
+            .map_err(RelayError::database)?;
+        migrate(&validation)?;
+        replace_backup_data(&mut validation, &archive.data)?;
+
+        let safety_backup = self.create_backup()?;
+        self.write_safety_backup(&safety_backup)?;
+        let mut db = self.db();
+        replace_backup_data(&mut db, &archive.data)?;
+        Ok(RestoreResult {
+            safety_backup,
+            restored_connections: archive.data.connections.len(),
+            credential_passwords_restored: false,
+        })
+    }
+    fn write_safety_backup(&self, archive: &BackupArchive) -> Result<(), RelayError> {
+        // In-memory libraries exist only in tests. Real installations retain a
+        // durable copy before the first destructive database statement runs.
+        if self.database_path == Path::new(":memory:") {
+            return Ok(());
+        }
+        let parent = self.database_path.parent().ok_or_else(|| {
+            RelayError::validation("Relay could not determine where to save the safety backup.")
+        })?;
+        let path = parent.join(format!(
+            "relay-pre-restore-{}.relay-backup.json",
+            archive.created_at
+        ));
+        let body = serde_json::to_vec_pretty(archive)
+            .map_err(|_| RelayError::validation("Relay could not serialize the safety backup."))?;
+        fs::write(path, body).map_err(|_| {
+            RelayError::validation("Relay could not write the pre-restore safety backup.")
+        })
     }
     pub fn archive_connections(&self, ids: Vec<String>, archived: bool) -> Result<(), RelayError> {
         let mut db = self.db();
@@ -1021,6 +1140,84 @@ fn adapter_command(
     }
 }
 
+fn backup_checksum(data: &BackupData) -> Result<String, RelayError> {
+    let payload = serde_json::to_vec(data)
+        .map_err(|_| RelayError::validation("Relay could not serialize this backup."))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(payload)))
+}
+
+fn validate_backup(archive: &BackupArchive) -> Result<(), RelayError> {
+    if archive.format_version != BACKUP_FORMAT_VERSION {
+        return Err(RelayError::validation(format!(
+            "This backup format (v{}) is not supported by this Relay version.",
+            archive.format_version
+        )));
+    }
+    if archive.checksum != backup_checksum(&archive.data)? {
+        return Err(RelayError::validation(
+            "The backup checksum does not match. It may be damaged or altered.",
+        ));
+    }
+    Ok(())
+}
+
+fn replace_backup_data(db: &mut SqliteConnection, data: &BackupData) -> Result<(), RelayError> {
+    let tx = db.transaction().map_err(RelayError::database)?;
+    tx.execute_batch(
+        "PRAGMA defer_foreign_keys=ON;
+        DELETE FROM connection_tags; DELETE FROM launch_history; DELETE FROM connections;
+        DELETE FROM gateways; DELETE FROM credentials; DELETE FROM folders; DELETE FROM sites;
+        DELETE FROM tags; DELETE FROM clients;",
+    )
+    .map_err(RelayError::database)?;
+    for item in &data.clients {
+        tx.execute("INSERT INTO clients(id,name,notes,archived,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)", params![item.id,item.name,item.notes,item.archived,now()]).map_err(RelayError::database)?;
+    }
+    for item in &data.sites {
+        tx.execute("INSERT INTO sites(id,client_id,name,location,notes,archived,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)", params![item.id,item.client_id,item.name,item.location,item.notes,item.archived,now()]).map_err(RelayError::database)?;
+    }
+    for item in &data.folders {
+        tx.execute("INSERT INTO folders(id,client_id,site_id,parent_id,name,sort_order,archived,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)", params![item.id,item.client_id,item.site_id,item.parent_id,item.name,item.sort_order,item.archived,now()]).map_err(RelayError::database)?;
+    }
+    for item in &data.credentials {
+        tx.execute("INSERT INTO credentials(id,client_id,label,username,domain,secret_ref,archived,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)", params![item.id,item.client_id,item.label,item.username,item.domain,format!("vault:{}", item.id),item.archived,now()]).map_err(RelayError::database)?;
+    }
+    for item in &data.gateways {
+        tx.execute("INSERT INTO gateways(id,client_id,name,host,port,username,credential_id,archived,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)", params![item.id,item.client_id,item.name,item.host,item.port,item.username,item.credential_id,item.archived,now()]).map_err(RelayError::database)?;
+    }
+    for item in &data.tags {
+        tx.execute(
+            "INSERT INTO tags(id,name,color_token) VALUES(?1,?2,?3)",
+            params![item.id, item.name, item.color_token],
+        )
+        .map_err(RelayError::database)?;
+    }
+    for item in &data.connections {
+        tx.execute("INSERT INTO connections(id,client_id,site_id,folder_id,gateway_id,credential_id,name,host,port,username,domain,display,notes,favorite,archived,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16)", params![item.id,item.client_id,item.site_id,item.folder_id,item.gateway_id,item.credential_id,item.name,item.host,item.port,item.username,item.domain,item.display,item.notes,item.favorite,item.archived,now()]).map_err(RelayError::database)?;
+        for tag_id in &item.tag_ids {
+            tx.execute(
+                "INSERT INTO connection_tags(connection_id,tag_id) VALUES(?1,?2)",
+                params![item.id, tag_id],
+            )
+            .map_err(RelayError::database)?;
+        }
+    }
+    for item in &data.launch_history {
+        tx.execute("INSERT INTO launch_history(id,connection_id,occurred_at,adapter,success,category) VALUES(?1,?2,?3,?4,?5,?6)", params![item.id,item.connection_id,item.occurred_at,item.adapter,item.success,item.category]).map_err(RelayError::database)?;
+    }
+    let violations: i64 = tx
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .map_err(RelayError::database)?;
+    if violations != 0 {
+        return Err(RelayError::validation(
+            "The backup contains relationships that cannot be restored.",
+        ));
+    }
+    tx.commit().map_err(RelayError::database)
+}
+
 fn protected_rdp_profile(connection: &Connection) -> Result<tempfile::TempPath, RelayError> {
     let mut file = tempfile::Builder::new()
         .prefix("relay-")
@@ -1150,6 +1347,8 @@ command!(list_tags:Vec<Tag>,list_tags());
 command!(save_tag:Tag,save_tag(item:Tag));
 command!(list_connections:Vec<Connection>,list_connections(query:ConnectionQuery));
 command!(save_connection:Connection,save_connection(item:Connection));
+command!(create_backup:BackupArchive,create_backup());
+command!(restore_backup:RestoreResult,restore_backup(archive:BackupArchive));
 command!(archive_connections:(),archive_connections(ids:Vec<String>,archived:bool));
 command!(set_connection_favorite:(),set_connection_favorite(id:String,favorite:bool));
 command!(duplicate_connection:Connection,duplicate_connection(source_id:String,new_id:String,name:String));
@@ -1189,6 +1388,8 @@ pub fn run() {
             save_tag,
             list_connections,
             save_connection,
+            create_backup,
+            restore_backup,
             archive_connections,
             set_connection_favorite,
             duplicate_connection,
@@ -1332,8 +1533,12 @@ mod tests {
             2
         );
         assert_eq!(
-            db.query_row("SELECT host FROM connections WHERE id='connection'", [], |row| row.get::<_, String>(0))
-                .unwrap(),
+            db.query_row(
+                "SELECT host FROM connections WHERE id='connection'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
             "gateway.example.test"
         );
         drop(db);
@@ -1458,6 +1663,45 @@ mod tests {
             redact_diagnostic(&format!("launch failed: {canary}"), canary),
             "launch failed: [REDACTED]"
         );
+    }
+    #[test]
+    fn backup_round_trip_is_checked_and_never_contains_a_password() {
+        let library = Library::open(":memory:").unwrap();
+        library.save_client(client()).unwrap();
+        library
+            .save_tag(Tag {
+                id: "prod".into(),
+                name: "Production".into(),
+                color_token: "red".into(),
+            })
+            .unwrap();
+        library.save_connection(connection()).unwrap();
+        let archive = library.create_backup().unwrap();
+        let text = serde_json::to_string(&archive).unwrap();
+        assert!(text.contains("sha256:"));
+        assert!(!text.contains("relay-stage-four-canary-7af8"));
+        library
+            .archive_connections(vec!["connection".into()], true)
+            .unwrap();
+        let result = library.restore_backup(archive).unwrap();
+        assert_eq!(result.restored_connections, 1);
+        assert!(!result.credential_passwords_restored);
+        assert_eq!(
+            library
+                .list_connections(ConnectionQuery::default())
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn corrupt_backup_is_rejected_before_replacing_library() {
+        let library = Library::open(":memory:").unwrap();
+        library.save_client(client()).unwrap();
+        let mut archive = library.create_backup().unwrap();
+        archive.data.clients[0].name = "Altered".into();
+        assert!(library.restore_backup(archive).is_err());
+        assert_eq!(library.list_clients().unwrap()[0].name, "Northwind");
     }
     #[test]
     fn parser_accepts_adversarial_lines_without_panic_or_secret_retention() {

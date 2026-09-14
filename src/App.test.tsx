@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { describe, expect, it } from "vitest";
 import App from "./App";
-describe("Relay Stage 3 interaction model", () => {
+describe("Relay Stage 5 interaction model", () => {
   it("guides a first-run user to create a client", () => {
     render(<App />);
     expect(
@@ -149,7 +149,7 @@ describe("Relay Stage 3 interaction model", () => {
       screen.getByRole("link", { name: "All connections" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /navigation/i })).toBeNull();
-    expect(screen.getByText("Stage 3 — RDP adapters")).toBeInTheDocument();
+    expect(screen.getByText("Stage 5 — Public beta")).toBeInTheDocument();
   });
   it("has no automatically detectable accessibility violations", async () => {
     render(<App />);

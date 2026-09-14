@@ -6,7 +6,7 @@ description: See Relay's active delivery stage, completed foundation, and next w
 
 # Project status
 
-Relay is in **Stage 3: RDP import, export, and launch adapters**.
+Relay is in **Stage 5: Backup, polish, and public beta**.
 
 ## Complete
 
@@ -28,10 +28,13 @@ Relay is in **Stage 3: RDP import, export, and launch adapters**.
 - Windows `mstsc`, macOS registered-client, and Linux FreeRDP launch adapters with direct argument execution
 - Native OS credential-store integration with an explicit Linux unavailable state, credential copy clearing, reassignment API, and secret-canary coverage
 - Stage 4 threat model, release security-review checklist, and SBOM/license reporting procedure
+- Versioned, SHA-256-checked secret-free backups, restore validation, and pre-restore safety backups
+- Public-beta installation, backup/recovery, and feedback-triage documentation
+- Cross-platform release packaging workflow with checksum generation and protected signing inputs
 
 ## In progress
 
-- Cross-platform adapter smoke tests against controlled targets
+- Clean-machine install, upgrade, uninstall, screen-reader, and controlled adapter smoke tests
 
 ## Foundation follow-up
 
@@ -47,4 +50,4 @@ The detailed, checkable source of truth is the repository's `CHECKLIST.md`. Prod
 
 ## Next exit gate
 
-Stage 3 requires the documented adapter smoke-test matrix to pass on Windows, macOS, and Linux. The code, native unit coverage, and Stage 4 security hardening are complete; the remaining evidence requires controlled hosts with installed RDP clients.
+Stage 5 requires clean-machine evidence on Windows, macOS, and Linux plus protected signing/notarization credentials. The remaining evidence requires controlled hosts, installed RDP clients, and release-key owners.

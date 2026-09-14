@@ -9,7 +9,9 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         "getting-started/development-setup",
+        "getting-started/install",
         "getting-started/rdp-import-export",
+        "getting-started/backup-and-restore",
       ],
     },
     {
@@ -40,7 +42,11 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "Project",
       collapsed: false,
-      items: ["project/status", "project/support-policy"],
+      items: [
+        "project/status",
+        "project/support-policy",
+        "project/beta-triage",
+      ],
     },
   ],
 };
