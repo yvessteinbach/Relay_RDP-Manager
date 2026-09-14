@@ -1394,24 +1394,10 @@ fn adapter_command(
         "mstsc" => {
             let mut command = Command::new("mstsc");
             command.arg(format!("/v:{}:{}", connection.host, connection.port));
-            if let Some(username) = connection
-                .username
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-            {
-                let username = if username.contains('\\') || username.contains('@') {
-                    username.to_owned()
-                } else if let Some(domain) = connection
-                    .domain
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                {
-                    format!("{domain}\\{username}")
-                } else {
-                    username.to_owned()
-                };
-                command.arg(format!("/u:{username}"));
-            }
+            // mstsc does not support a /u switch. Passing one makes it show
+            // its command-line syntax dialog instead of starting the session.
+            // A saved credential is prepared in Windows Credential Manager
+            // before launch; otherwise mstsc prompts for the account itself.
             match connection.display.as_str() {
                 "Full screen" => {
                     command.arg("/f");
@@ -1989,7 +1975,7 @@ mod tests {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            ["/v:gateway.example.test:3389", "/u:admin"]
+            ["/v:gateway.example.test:3389"]
         );
         let profile = protected_rdp_profile(&connection()).unwrap();
         let macos = adapter_command("macos-open", &connection(), Some(profile.as_ref())).unwrap();
