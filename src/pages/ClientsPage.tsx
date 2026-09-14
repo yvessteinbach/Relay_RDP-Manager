@@ -50,15 +50,7 @@ export function ClientFormPage({ createClient, go }: ScreenProps) {
           <Button kind="secondary" type="button" onClick={() => go("clients")}>
             Cancel
           </Button>
-          <Button
-            kind="secondary"
-            type="submit"
-            name="afterSave"
-            value="clients"
-          >
-            Skip for now
-          </Button>
-          <Button type="submit">Save and add connection</Button>
+          <Button type="submit">Save client</Button>
         </ButtonSet>
       </form>
     </>

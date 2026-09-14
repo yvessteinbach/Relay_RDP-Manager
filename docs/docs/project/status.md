@@ -6,7 +6,7 @@ description: See Relay's active delivery stage, completed foundation, and next w
 
 # Project status
 
-Relay is in **Stage 5: Backup, polish, and public beta**.
+Relay is in **Stage 6: Stable 1.0**.
 
 ## Complete
 
@@ -34,6 +34,7 @@ Relay is in **Stage 5: Backup, polish, and public beta**.
 
 ## In progress
 
+- Resolve beta blockers, freeze the version 1 schema and command API, and prepare stable-release documentation and artifacts
 - Clean-machine install, upgrade, uninstall, screen-reader, and controlled adapter smoke tests
 
 ## Foundation follow-up
@@ -50,4 +51,4 @@ The detailed, checkable source of truth is the repository's `CHECKLIST.md`. Prod
 
 ## Next exit gate
 
-Stage 5 requires clean-machine evidence on Windows, macOS, and Linux plus protected signing/notarization credentials. The remaining evidence requires controlled hosts, installed RDP clients, and release-key owners.
+Stage 6 cannot close until the version 1 success criteria are measured and met. This includes the carried-forward clean-machine evidence on Windows, macOS, and Linux, controlled adapter smoke tests, and protected signing/notarization credentials; those require controlled hosts, installed RDP clients, and release-key owners.

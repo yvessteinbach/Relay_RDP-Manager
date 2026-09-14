@@ -1,6 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { setTheme as setApplicationTheme } from "@tauri-apps/api/app";
+import {
+  getVersion,
+  setTheme as setApplicationTheme,
+} from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
   Button,
   ButtonSet,
@@ -119,6 +123,33 @@ type LaunchHistory = {
   success: boolean;
   category?: string | null;
 };
+type UpdateCheck = {
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "installed"
+    | "upToDate"
+    | "error";
+  latestVersion?: string;
+  update?: Update;
+  errorMessage?: string;
+};
+type UpdateProgress = { downloaded: number; total?: number };
+
+const FALLBACK_VERSION = "0.1.0";
+
+const formatDownloadSize = (bytes: number) =>
+  `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+const updateCheckErrorMessage = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/404|not found|release.*(missing|available)|no.*release/i.test(message)) {
+    return "No published Relay release is available yet. Publish the first signed release, then check again.";
+  }
+  return "Relay could not reach or read its signed release feed. Check your internet connection and try again.";
+};
 
 function App() {
   const [activePage, setActivePage] = useState<PageId>("connections");
@@ -147,12 +178,22 @@ function App() {
   const [connectionPageSize, setConnectionPageSize] = useState(10);
   const [editMessage, setEditMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
+  const [appVersion, setAppVersion] = useState(FALLBACK_VERSION);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck>({
+    status: "idle",
+  });
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress>();
   useEffect(() => {
     // Tauri applies this to the native window frame, including the macOS title bar.
     void setApplicationTheme(theme === "g100" ? "dark" : "light").catch(
       () => undefined,
     );
   }, [theme]);
+  useEffect(() => {
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => undefined);
+  }, []);
   useEffect(() => {
     const loadLibrary = async () => {
       try {
@@ -237,6 +278,61 @@ function App() {
       );
     }
   };
+  const checkForUpdates = async () => {
+    setUpdateCheck({ status: "checking" });
+    setUpdateProgress(undefined);
+    try {
+      const update = await check();
+      setUpdateCheck(
+        update
+          ? { status: "available", latestVersion: update.version, update }
+          : { status: "upToDate" },
+      );
+    } catch (error) {
+      setUpdateCheck({
+        status: "error",
+        errorMessage: updateCheckErrorMessage(error),
+      });
+    }
+  };
+  const installUpdate = async () => {
+    const update = updateCheck.update;
+    if (!update) return;
+
+    setUpdateCheck({
+      status: "downloading",
+      latestVersion: updateCheck.latestVersion,
+    });
+    setUpdateProgress({ downloaded: 0 });
+    try {
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          setUpdateProgress({
+            downloaded: 0,
+            total: event.data.contentLength,
+          });
+        }
+        if (event.event === "Progress") {
+          setUpdateProgress((progress) => ({
+            downloaded: (progress?.downloaded ?? 0) + event.data.chunkLength,
+            total: progress?.total,
+          }));
+        }
+      });
+      setUpdateCheck({
+        status: "installed",
+        latestVersion: updateCheck.latestVersion,
+      });
+    } catch {
+      setUpdateCheck({
+        status: "error",
+        errorMessage:
+          "Relay could not download or install this signed update. Please try again.",
+      });
+    } finally {
+      await update.close();
+    }
+  };
   const restoreBackup = async (file: File) => {
     try {
       const archive = JSON.parse(await file.text()) as BackupArchive;
@@ -268,10 +364,6 @@ function App() {
   const createClient = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const submitter = (event.nativeEvent as SubmitEvent)
-      .submitter as HTMLButtonElement | null;
-    const nextPage =
-      submitter?.value === "clients" ? "clients" : "connection-form";
     const client = {
       id: crypto.randomUUID(),
       name: String(form.get("name")).trim(),
@@ -281,7 +373,7 @@ function App() {
     setClients((current) => [...current, client]);
     void invoke("save_client", { client }).catch(() => undefined);
     setFormClientId(client.id);
-    go(nextPage);
+    go("clients");
   };
   const createConnection = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1506,52 +1598,53 @@ function App() {
             />
           ) : null}
           {clients.length ? (
-            <Tile>
-              <form onSubmit={(event) => void saveCredential(event)}>
-                <Stack gap={5}>
-                  <h2 className="cds--heading-03">Save credential</h2>
-                  <Dropdown
-                    id="credential-client"
-                    titleText="Client"
-                    label="Choose a client"
-                    items={clients}
-                    selectedItem={clients.find(
-                      (client) =>
-                        client.id === (credentialClientId || clients[0]?.id),
-                    )}
-                    itemToString={(item) => item?.name ?? ""}
-                    onChange={({ selectedItem }) =>
-                      setCredentialClientId(selectedItem?.id ?? "")
-                    }
-                  />
-                  <TextInput
-                    id="credential-label"
-                    name="credentialLabel"
-                    labelText="Credential label"
-                    required
-                  />
-                  <TextInput
-                    id="credential-username"
-                    name="credentialUsername"
-                    labelText="Username"
-                  />
-                  <TextInput
-                    id="credential-domain"
-                    name="credentialDomain"
-                    labelText="Domain"
-                  />
-                  <TextInput
-                    id="credential-password"
-                    name="credentialPassword"
-                    type="password"
-                    labelText="Password"
-                    required
-                    autoComplete="new-password"
-                  />
-                  <Button type="submit" disabled={!vaultStatus?.available}>
-                    Save credential
-                  </Button>
-                </Stack>
+            <Tile className="relay-credential-editor">
+              <form
+                className="relay-credential-form"
+                onSubmit={(event) => void saveCredential(event)}
+              >
+                <h2 className="cds--heading-03">Save credential</h2>
+                <Dropdown
+                  id="credential-client"
+                  titleText="Client"
+                  label="Choose a client"
+                  items={clients}
+                  selectedItem={clients.find(
+                    (client) =>
+                      client.id === (credentialClientId || clients[0]?.id),
+                  )}
+                  itemToString={(item) => item?.name ?? ""}
+                  onChange={({ selectedItem }) =>
+                    setCredentialClientId(selectedItem?.id ?? "")
+                  }
+                />
+                <TextInput
+                  id="credential-label"
+                  name="credentialLabel"
+                  labelText="Credential label"
+                  required
+                />
+                <TextInput
+                  id="credential-username"
+                  name="credentialUsername"
+                  labelText="Username"
+                />
+                <TextInput
+                  id="credential-domain"
+                  name="credentialDomain"
+                  labelText="Domain"
+                />
+                <TextInput
+                  id="credential-password"
+                  name="credentialPassword"
+                  type="password"
+                  labelText="Password"
+                  required
+                  autoComplete="new-password"
+                />
+                <Button type="submit" disabled={!vaultStatus?.available}>
+                  Save credential
+                </Button>
               </form>
             </Tile>
           ) : (
@@ -1564,7 +1657,7 @@ function App() {
             />
           )}
           {credentials.length ? (
-            <div className="relay-client-grid">
+            <div className="relay-credential-grid">
               {credentials.map((credential) => (
                 <Tile key={credential.id}>
                   <Stack gap={4}>
@@ -1763,6 +1856,81 @@ function App() {
             <Tile>
               <Stack gap={5}>
                 <div>
+                  <h2 className="cds--heading-03">Application updates</h2>
+                  <p className="cds--body-01">
+                    Relay {appVersion}. Download and install signed updates from
+                    Relay's release channel.
+                  </p>
+                </div>
+                <Button
+                  kind="tertiary"
+                  onClick={() => void checkForUpdates()}
+                  disabled={updateCheck.status === "checking"}
+                >
+                  Check for updates
+                </Button>
+                {updateCheck.status === "checking" ? (
+                  <InlineLoading description="Checking for updates" />
+                ) : null}
+                {updateCheck.status === "available" ? (
+                  <>
+                    <InlineNotification
+                      hideCloseButton
+                      lowContrast
+                      kind="success"
+                      title={`Version ${updateCheck.latestVersion} is available`}
+                      subtitle="Download and install it now."
+                    />
+                    <Button kind="primary" onClick={() => void installUpdate()}>
+                      Update now
+                    </Button>
+                  </>
+                ) : null}
+                {updateCheck.status === "downloading" ? (
+                  <>
+                    <InlineLoading description="Downloading and installing update" />
+                    <p className="cds--body-compact-01">
+                      {updateProgress?.total
+                        ? `${formatDownloadSize(updateProgress.downloaded)} of ${formatDownloadSize(updateProgress.total)} downloaded`
+                        : `${formatDownloadSize(updateProgress?.downloaded ?? 0)} downloaded`}
+                    </p>
+                  </>
+                ) : null}
+                {updateCheck.status === "installed" ? (
+                  <InlineNotification
+                    hideCloseButton
+                    lowContrast
+                    kind="success"
+                    title={`Version ${updateCheck.latestVersion} is installed`}
+                    subtitle="Quit and reopen Relay to use the new version."
+                  />
+                ) : null}
+                {updateCheck.status === "upToDate" ? (
+                  <InlineNotification
+                    hideCloseButton
+                    lowContrast
+                    kind="success"
+                    title="Relay is up to date"
+                    subtitle={`Version ${appVersion} is the latest published release.`}
+                  />
+                ) : null}
+                {updateCheck.status === "error" ? (
+                  <InlineNotification
+                    hideCloseButton
+                    lowContrast
+                    kind="error"
+                    title="Could not check for updates"
+                    subtitle={
+                      updateCheck.errorMessage ??
+                      "Relay could not reach its signed release feed. Check your internet connection and try again."
+                    }
+                  />
+                ) : null}
+              </Stack>
+            </Tile>
+            <Tile>
+              <Stack gap={5}>
+                <div>
                   <h2 className="cds--heading-03">Backup and restore</h2>
                   <p className="cds--body-01">
                     Backups contain your library settings and launch history.
@@ -1824,7 +1992,7 @@ function App() {
           lowContrast
           kind="info"
           title="Available in a later stage"
-          subtitle="This workflow is outside the current RDP import, export, and launch stage."
+          subtitle="This workflow is outside the current stable-release scope."
         />
       </>
     );
@@ -1841,7 +2009,7 @@ function App() {
             Relay RDP Manager
           </HeaderName>
           <Tag className="relay-stage-tag" type="blue">
-            Stage 5 — Public Beta
+            Stage 6 — Stable 1.0
           </Tag>
         </Header>
         <SideNav aria-label="Primary navigation" expanded isPersistent>

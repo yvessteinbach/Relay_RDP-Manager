@@ -12,6 +12,10 @@ src-tauri/target/
 .npm-cache/
 .cache/
 
+# Tauri updater signing keys must remain local or in the CI secret store.
+*.key
+*.key.pub
+
 # Environment files
 .env
 .env.*

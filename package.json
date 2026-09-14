@@ -25,6 +25,7 @@
     "@carbon/react": "1.116.0",
     "@carbon/styles": "1.115.0",
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-updater": "^2.11.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

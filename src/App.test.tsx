@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { describe, expect, it } from "vitest";
 import App from "./App";
-describe("Relay Stage 5 interaction model", () => {
+describe("Relay Stage 6 interaction model", () => {
   it("guides a first-run user to create a client", () => {
     render(<App />);
     expect(
@@ -18,8 +18,10 @@ describe("Relay Stage 5 interaction model", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Create client" }));
     await user.type(screen.getByLabelText("Client name"), "Example client");
+    await user.click(screen.getByRole("button", { name: "Save client" }));
+    await user.click(screen.getByRole("link", { name: "Example client" }));
     await user.click(
-      screen.getByRole("button", { name: "Save and add connection" }),
+      screen.getAllByRole("button", { name: "Add connection" })[0],
     );
     await user.type(screen.getByLabelText("Connection name"), "Example server");
     await user.type(
@@ -42,7 +44,7 @@ describe("Relay Stage 5 interaction model", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Create client" }));
     await user.type(screen.getByLabelText("Client name"), "Northwind");
-    await user.click(screen.getByRole("button", { name: "Skip for now" }));
+    await user.click(screen.getByRole("button", { name: "Save client" }));
     expect(
       screen.getByRole("heading", { level: 1, name: "Clients" }),
     ).toBeInTheDocument();
@@ -53,8 +55,10 @@ describe("Relay Stage 5 interaction model", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Create client" }));
     await user.type(screen.getByLabelText("Client name"), "Northwind");
+    await user.click(screen.getByRole("button", { name: "Save client" }));
+    await user.click(screen.getByRole("link", { name: "Northwind" }));
     await user.click(
-      screen.getByRole("button", { name: "Save and add connection" }),
+      screen.getAllByRole("button", { name: "Add connection" })[0],
     );
     expect(screen.getByLabelText("Password")).toHaveAttribute(
       "type",
@@ -69,8 +73,10 @@ describe("Relay Stage 5 interaction model", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Create client" }));
     await user.type(screen.getByLabelText("Client name"), "Example client");
+    await user.click(screen.getByRole("button", { name: "Save client" }));
+    await user.click(screen.getByRole("link", { name: "Example client" }));
     await user.click(
-      screen.getByRole("button", { name: "Save and add connection" }),
+      screen.getAllByRole("button", { name: "Add connection" })[0],
     );
     await user.type(screen.getByLabelText("Connection name"), "Example server");
     await user.type(
@@ -98,8 +104,10 @@ describe("Relay Stage 5 interaction model", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Create client" }));
     await user.type(screen.getByLabelText("Client name"), "Northwind");
+    await user.click(screen.getByRole("button", { name: "Save client" }));
+    await user.click(screen.getByRole("link", { name: "Northwind" }));
     await user.click(
-      screen.getByRole("button", { name: "Save and add connection" }),
+      screen.getAllByRole("button", { name: "Add connection" })[0],
     );
     await user.type(screen.getByLabelText("Connection name"), "RD01");
     await user.type(screen.getByLabelText("Host or IP address"), "10.0.0.1");
@@ -135,8 +143,10 @@ describe("Relay Stage 5 interaction model", () => {
     await user.click(screen.getByRole("button", { name: "Create client" }));
     await user.type(screen.getByLabelText("Client name"), "Example client");
     expect(screen.queryByLabelText("Short name")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Save client" }));
+    await user.click(screen.getByRole("link", { name: "Example client" }));
     await user.click(
-      screen.getByRole("button", { name: "Save and add connection" }),
+      screen.getAllByRole("button", { name: "Add connection" })[0],
     );
     await user.type(screen.getByLabelText("Connection name"), "Example server");
     await user.type(
@@ -158,8 +168,10 @@ describe("Relay Stage 5 interaction model", () => {
       screen.getByRole("link", { name: "All connections" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /navigation/i })).toBeNull();
-    expect(screen.getByRole("link", { name: "Relay" })).toBeInTheDocument();
-    expect(screen.getByText("Stage 5 — Public beta")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Relay RDP Manager" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Stage 6 — Stable 1.0")).toBeInTheDocument();
   });
   it("has no automatically detectable accessibility violations", async () => {
     render(<App />);

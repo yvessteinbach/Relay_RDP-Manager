@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "Minimum capabilities for the Relay main window.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:app:allow-set-app-theme"]
+  "permissions": [
+    "core:default",
+    "core:app:allow-set-app-theme",
+    "updater:default"
+  ]
 }

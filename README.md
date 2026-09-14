@@ -8,14 +8,14 @@ Relay is currently in early development. The active work is tracked in the [exec
 
 ## Current state
 
-- Stage 5 — Backup, polish, and public beta: **in progress**
+- Stage 6 — Stable 1.0: **active**
 - Carbon-based React application shell and connection-library prototype: available
 - Tauri native shell and SQLite-backed library boundary: available
 - Docusaurus developer documentation: scaffolded
 - Client and connection persistence commands: available; the frontend is not wired to them yet
 - Sanitized `.rdp` import/export and native RDP-client launch adapters: available
 - Versioned secret-free backup/restore with validation and a pre-restore safety backup: available
-- Platform smoke tests and clean-machine release evidence: pending
+- Platform smoke tests, clean-machine release evidence, and protected signing credentials: pending release prerequisites
 
 ## Run the application frontend
 

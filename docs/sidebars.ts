@@ -12,6 +12,7 @@ const sidebars: SidebarsConfig = {
         "getting-started/install",
         "getting-started/rdp-import-export",
         "getting-started/backup-and-restore",
+        "getting-started/updates",
       ],
     },
     {

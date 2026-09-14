@@ -1684,6 +1684,9 @@ pub fn run() {
     let data_dir = tauri::path::BaseDirectory::AppLocalData;
     tauri::Builder::default()
         .setup(move |app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             let path = app.path().resolve("library.sqlite3", data_dir)?;
             std::fs::create_dir_all(path.parent().expect("database path has parent"))?;
             app.manage(Library::open(path).map_err(|e| std::io::Error::other(e.message))?);

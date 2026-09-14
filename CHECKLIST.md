@@ -1,8 +1,8 @@
 # Relay execution checklist
 
 Last updated: 2026-09-14  
-Current stage: **Stage 3 — RDP import/export and launch adapters**  
-Overall status: **Blocked on required platform smoke tests**
+Current stage: **Stage 6 — Stable 1.0**
+Overall status: **Active — stable-release preparation; required platform and signing evidence remains pending**
 
 This checklist is the source of truth for implementation progress. A stage is checked only after its exit gate has been demonstrated. Detailed scope and rationale remain in [PLAN.md](./PLAN.md).
 
@@ -18,10 +18,10 @@ This checklist is the source of truth for implementation progress. A stage is ch
 - [ ] Stage 0 — Product contract and foundation
 - [x] Stage 1 — Frontend interaction model
 - [x] Stage 2 — Core library and persistence
-- [ ] **Stage 3 — RDP import/export and launch adapters** — **Current**
+- [ ] Stage 3 — RDP import/export and launch adapters
 - [x] Stage 4 — Credential vault and security hardening
 - [ ] Stage 5 — Backup, polish, and public beta
-- [ ] Stage 6 — Stable 1.0
+- [ ] **Stage 6 — Stable 1.0** — **Current**
 - [ ] Stage 7 — Evidence-driven post-1.0 work
 
 ## Stage 0 — Product contract and foundation

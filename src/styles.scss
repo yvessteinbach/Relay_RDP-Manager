@@ -43,7 +43,8 @@ body {
   overflow-y: auto;
 }
 .relay-page-frame > .relay-list-page {
-  min-block-size: 100%;
+  flex: 0 0 auto;
+  min-block-size: auto;
 }
 .relay-header {
   display: flex;
@@ -116,8 +117,25 @@ body {
   max-width: 42rem;
   padding-block: $spacing-05;
 }
+.relay-credential-editor {
+  max-inline-size: 42rem;
+}
+.relay-credential-form {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-05;
+}
+.relay-credential-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: $spacing-05;
+  align-items: start;
+}
 .relay-table {
-  overflow-x: auto;
+  min-inline-size: 0;
+}
+.relay-table .cds--data-table-content {
+  overflow-y: visible;
 }
 .relay-connection-row {
   cursor: pointer;
