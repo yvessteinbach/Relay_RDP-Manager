@@ -1,0 +1,163 @@
+@use "@carbon/styles/scss/config" with (
+  $font-path: "@ibm/plex"
+);
+@use "@carbon/react";
+@use "@carbon/styles/scss/spacing" as *;
+html,
+body,
+#root {
+  block-size: 100%;
+  overflow: hidden;
+}
+body {
+  margin: 0;
+  background: var(--cds-background);
+}
+.relay-content {
+  block-size: calc(100vh - 3rem);
+  box-sizing: border-box;
+  margin-block-start: 3rem;
+  margin-inline-start: 16rem;
+  overflow-y: auto;
+  padding: $spacing-09;
+}
+.relay-content > .cds--grid,
+.relay-content .cds--css-grid {
+  min-block-size: 100%;
+}
+.relay-content .cds--col {
+  display: flex;
+  min-block-size: 100%;
+}
+.relay-content .cds--col > .cds--stack {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  inline-size: 100%;
+  min-block-size: 100%;
+}
+.relay-stage-tag {
+  margin-inline-start: auto;
+  margin-inline-end: $spacing-05;
+}
+.relay-page-heading {
+  max-width: 42rem;
+}
+.relay-page-description {
+  margin-block-start: $spacing-04;
+  color: var(--cds-text-secondary);
+}
+.relay-empty-state {
+  min-height: 20rem;
+  display: flex;
+  align-items: center;
+  border-block-start: 0.25rem solid #e4002b;
+}
+.relay-detail-heading {
+  display: flex;
+  gap: $spacing-06;
+  align-items: end;
+  justify-content: space-between;
+}
+.relay-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: $spacing-03;
+}
+.relay-context-strip {
+  border-block: 1px solid var(--cds-border-subtle);
+  border-inline-start: 0.25rem solid #e4002b;
+  display: flex;
+  gap: $spacing-03;
+  align-items: baseline;
+  padding: $spacing-03 $spacing-05;
+}
+.relay-context-strip span {
+  color: var(--cds-text-secondary);
+  font-size: 0.75rem;
+}
+.relay-context-strip strong + span {
+  margin-inline-start: $spacing-05;
+}
+.relay-form {
+  display: grid;
+  gap: $spacing-07;
+  max-width: 42rem;
+  padding-block: $spacing-05;
+}
+.relay-table {
+  overflow-x: auto;
+}
+.relay-connection-row {
+  cursor: pointer;
+}
+.relay-connection-row:focus-visible {
+  outline: 0.125rem solid #002fa7;
+  outline-offset: -0.125rem;
+}
+.relay-connection-row:hover > .cds--table-cell {
+  background: var(--cds-layer-hover);
+}
+.relay-list-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: $spacing-07;
+  min-block-size: 100%;
+}
+.relay-list-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: $spacing-06;
+  min-block-size: 0;
+}
+.relay-list-pagination {
+  position: sticky;
+  inset-block-end: 0;
+  z-index: 1;
+  margin-block-start: auto;
+}
+.relay-client-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: $spacing-05;
+}
+.relay-client-tile {
+  display: block;
+  margin: -$spacing-05;
+  padding: $spacing-05;
+  text-decoration: none;
+}
+.relay-client-tile h2 {
+  color: var(--cds-link-primary);
+}
+.relay-definition-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: $spacing-06;
+  margin: 0;
+}
+.relay-definition-list dt {
+  color: var(--cds-text-secondary);
+  margin-block-end: $spacing-03;
+}
+.relay-definition-list dd {
+  font-size: 1rem;
+  margin: 0;
+}
+@media (max-width: 42rem) {
+  .relay-content {
+    padding: $spacing-05;
+  }
+  .relay-detail-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+  .relay-detail-actions {
+    flex-wrap: wrap;
+  }
+  .relay-context-strip {
+    flex-wrap: wrap;
+  }
+}

@@ -1,0 +1,1720 @@
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  Button,
+  ButtonSet,
+  Checkbox,
+  ClickableTile,
+  Column,
+  Content,
+  DataTable,
+  Dropdown,
+  FileUploaderButton,
+  Grid,
+  Header,
+  InlineLoading,
+  InlineNotification,
+  Pagination,
+  Search,
+  SideNav,
+  SideNavItems,
+  SideNavLink,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Tab,
+  TabList,
+  TabPanel,
+  TabPanels,
+  Tabs,
+  Tag,
+  TextArea,
+  TextInput,
+  Theme,
+  Tile,
+} from "@carbon/react";
+import {
+  Add,
+  Certificate,
+  Copy,
+  ConnectionSignal,
+  Edit,
+  Favorite,
+  FavoriteFilled,
+  ImportExport,
+  RecentlyViewed,
+  Settings,
+  UserMultiple,
+} from "@carbon/icons-react";
+
+type PageId =
+  | "connections"
+  | "clients"
+  | "favorites"
+  | "recent"
+  | "import-export"
+  | "credentials"
+  | "settings"
+  | "client-form"
+  | "client-detail"
+  | "connection-form"
+  | "connection-edit"
+  | "connection-detail";
+type Client = { id: string; name: string; notes: string };
+type Connection = {
+  id: string;
+  name: string;
+  host: string;
+  username: string;
+  clientId: string;
+  favorite: boolean;
+  display: string;
+  credentialId?: string | null;
+  port?: number;
+  domain?: string | null;
+  notes?: string;
+  archived?: boolean;
+  tagIds?: string[];
+};
+type StoredConnection = Connection & {
+  siteId?: string | null;
+  folderId?: string | null;
+  gatewayId?: string | null;
+};
+type RdpReview = {
+  filename: string;
+  connection: {
+    name: string;
+    host: string;
+    port: number;
+    username?: string;
+    display: string;
+  };
+  warnings: string[];
+  unsupportedKeys: string[];
+  duplicateConnectionId?: string | null;
+};
+type AdapterSupport = {
+  id: string;
+  label: string;
+  available: boolean;
+  notes: string;
+};
+type Credential = {
+  id: string;
+  clientId: string;
+  label: string;
+  username?: string | null;
+  domain?: string | null;
+};
+type VaultStatus = { available: boolean; platform: string; message: string };
+type LaunchHistory = {
+  id: number;
+  connectionId: string;
+  occurredAt: number;
+  adapter: string;
+  success: boolean;
+  category?: string | null;
+};
+type NavigationPage = Exclude<
+  PageId,
+  | "client-form"
+  | "client-detail"
+  | "connection-form"
+  | "connection-edit"
+  | "connection-detail"
+>;
+
+const navigation: Array<{
+  id: NavigationPage;
+  label: string;
+  icon: typeof ConnectionSignal;
+}> = [
+  { id: "connections", label: "All connections", icon: ConnectionSignal },
+  { id: "clients", label: "Clients", icon: UserMultiple },
+  { id: "favorites", label: "Favorites", icon: Favorite },
+  { id: "recent", label: "Recent", icon: RecentlyViewed },
+  { id: "import-export", label: "Import and export", icon: ImportExport },
+  { id: "credentials", label: "Credentials", icon: Certificate },
+  { id: "settings", label: "Settings", icon: Settings },
+];
+const pageCopy: Record<NavigationPage, { title: string; description: string }> =
+  {
+    connections: {
+      title: "All connections",
+      description:
+        "Find a saved connection by customer, host, username, or tag.",
+    },
+    clients: {
+      title: "Clients",
+      description:
+        "Keep customer organizations and their connection libraries distinct.",
+    },
+    favorites: {
+      title: "Favorites",
+      description: "Your marked connections appear here for fast access.",
+    },
+    recent: {
+      title: "Recent",
+      description:
+        "Launch history will appear here after a connection is opened.",
+    },
+    "import-export": {
+      title: "Import and export",
+      description:
+        "Review RDP files before adding them, and export settings without passwords.",
+    },
+    credentials: {
+      title: "Credentials",
+      description:
+        "Credential references are designed to use your operating system's secure store.",
+    },
+    settings: {
+      title: "Settings",
+      description: "Choose an RDP client, appearance, and library preferences.",
+    },
+  };
+
+function ContextStrip({
+  connection,
+  client,
+}: {
+  connection?: Connection;
+  client?: Client;
+}) {
+  if (!connection && !client) return null;
+  return (
+    <div className="relay-context-strip">
+      <span>Client</span>
+      <strong>{client?.name ?? "Choose a client"}</strong>
+      {connection ? (
+        <>
+          <span>Connection</span>
+          <strong>{connection.name}</strong>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function App() {
+  const [activePage, setActivePage] = useState<PageId>("connections");
+  const [clients, setClients] = useState<Client[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [query, setQuery] = useState("");
+  const [selectedConnection, setSelectedConnection] = useState<Connection>();
+  const [selectedClientId, setSelectedClientId] = useState("");
+  const [formClientId, setFormClientId] = useState("");
+  const [launching, setLaunching] = useState(false);
+  const [launchMessage, setLaunchMessage] = useState("");
+  const [importReview, setImportReview] = useState<RdpReview>();
+  const [adapterSupport, setAdapterSupport] = useState<AdapterSupport[]>([]);
+  const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [vaultStatus, setVaultStatus] = useState<VaultStatus>();
+  const [launchHistory, setLaunchHistory] = useState<LaunchHistory[]>([]);
+  const [theme, setTheme] = useState<"g10" | "g100">("g10");
+  const [credentialMessage, setCredentialMessage] = useState("");
+  const [credentialClientId, setCredentialClientId] = useState("");
+  const [display, setDisplay] = useState("Use RDP client default");
+  const [connectionClientFilter, setConnectionClientFilter] =
+    useState("All clients");
+  const [connectionPage, setConnectionPage] = useState(1);
+  const [connectionPageSize, setConnectionPageSize] = useState(10);
+  const [editMessage, setEditMessage] = useState("");
+  useEffect(() => {
+    const loadLibrary = async () => {
+      try {
+        const [storedClients, storedConnections] = await Promise.all([
+          invoke<Client[]>("list_clients"),
+          invoke<StoredConnection[]>("list_connections", {
+            query: { text: "", includeArchived: false },
+          }),
+        ]);
+        setClients(storedClients);
+        setConnections(
+          storedConnections.map((connection) => ({
+            ...connection,
+            username: connection.username ?? "",
+            display: connection.display || "Use RDP client default",
+          })),
+        );
+        setAdapterSupport(await invoke<AdapterSupport[]>("adapter_support"));
+        setCredentials(
+          await invoke<Credential[]>("list_credentials", { clientId: null }),
+        );
+        setVaultStatus(await invoke<VaultStatus>("credential_store_status"));
+        setLaunchHistory(
+          await invoke<LaunchHistory[]>("list_launch_history", {
+            connectionId: null,
+          }),
+        );
+      } catch {
+        // The browser prototype deliberately remains usable without Tauri.
+      }
+    };
+    void loadLibrary();
+  }, []);
+  const selectedClient = clients.find(
+    (client) => client.id === (selectedConnection?.clientId ?? formClientId),
+  );
+  const selectedCredential = credentials.find(
+    (credential) => credential.id === selectedConnection?.credentialId,
+  );
+  const visibleConnections = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return connections.filter(
+      (connection) =>
+        !needle ||
+        [
+          connection.name,
+          connection.host,
+          connection.username,
+          clients.find((client) => client.id === connection.clientId)?.name ??
+            "",
+        ].some((value) => value.toLowerCase().includes(needle)),
+    );
+  }, [clients, connections, query]);
+  const go = (page: PageId) => {
+    setActivePage(page);
+    setQuery("");
+    setConnectionPage(1);
+  };
+  const createClient = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const submitter = (event.nativeEvent as SubmitEvent)
+      .submitter as HTMLButtonElement | null;
+    const nextPage =
+      submitter?.value === "clients" ? "clients" : "connection-form";
+    const client = {
+      id: crypto.randomUUID(),
+      name: String(form.get("name")).trim(),
+      notes: String(form.get("notes")).trim(),
+    };
+    if (!client.name) return;
+    setClients((current) => [...current, client]);
+    void invoke("save_client", { client }).catch(() => undefined);
+    setFormClientId(client.id);
+    go(nextPage);
+  };
+  const createConnection = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const password = String(form.get("password"));
+    const connectionId = crypto.randomUUID();
+    const credentialId = password ? crypto.randomUUID() : null;
+    const connectionName = String(form.get("connectionName")).trim();
+    const username = String(form.get("username")).trim();
+    const connection = {
+      id: connectionId,
+      name: connectionName,
+      host: String(form.get("host")).trim(),
+      username,
+      clientId: formClientId,
+      favorite: Boolean(form.get("favorite")),
+      display,
+      credentialId,
+    };
+    if (!connection.name || !connection.host || !connection.clientId) return;
+    try {
+      if (credentialId) {
+        const credential = await invoke<Credential>("save_credential", {
+          item: {
+            id: credentialId,
+            clientId: connection.clientId,
+            label: `${connection.name} password`,
+            username: username || null,
+            domain: null,
+            password,
+            archived: false,
+          },
+        });
+        setCredentials((current) => [...current, credential]);
+      }
+      const connectionPayload = {
+        item: {
+          ...connection,
+          port: 3389,
+          siteId: null,
+          folderId: null,
+          gatewayId: null,
+          credentialId,
+          domain: null,
+          notes: "",
+          archived: false,
+          tagIds: [],
+        },
+      };
+      if (credentialId) await invoke("save_connection", connectionPayload);
+      else
+        void invoke("save_connection", connectionPayload).catch(
+          () => undefined,
+        );
+      setConnections((current) => [...current, connection]);
+      setSelectedConnection(connection);
+      setLaunchMessage(
+        credentialId
+          ? "Connection and password saved securely."
+          : "Connection saved.",
+      );
+      go("connection-detail");
+    } catch {
+      setLaunchMessage(
+        password
+          ? "Relay could not save the password in your operating system credential store. The connection was not created."
+          : "Relay could not save this connection.",
+      );
+    }
+  };
+  const editConnection = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedConnection) return;
+    const form = new FormData(event.currentTarget);
+    const password = String(form.get("password"));
+    const connection = {
+      ...selectedConnection,
+      name: String(form.get("connectionName")).trim(),
+      host: String(form.get("host")).trim(),
+      username: String(form.get("username")).trim(),
+      display,
+    };
+    if (!connection.name || !connection.host) return;
+    try {
+      let credentialId = connection.credentialId ?? null;
+      if (password) {
+        credentialId ??= crypto.randomUUID();
+        const credential = await invoke<Credential>("save_credential", {
+          item: {
+            id: credentialId,
+            clientId: connection.clientId,
+            label: `${connection.name} password`,
+            username: connection.username || null,
+            domain: connection.domain ?? null,
+            password,
+            archived: false,
+          },
+        });
+        setCredentials((current) => [
+          ...current.filter((item) => item.id !== credential.id),
+          credential,
+        ]);
+      }
+      const updatedConnection = { ...connection, credentialId };
+      const connectionPayload = {
+        item: {
+          ...updatedConnection,
+          port: updatedConnection.port ?? 3389,
+          siteId: null,
+          folderId: null,
+          gatewayId: null,
+          domain: updatedConnection.domain ?? null,
+          notes: updatedConnection.notes ?? "",
+          archived: updatedConnection.archived ?? false,
+          tagIds: updatedConnection.tagIds ?? [],
+        },
+      };
+      if (password) await invoke("save_connection", connectionPayload);
+      else
+        void invoke("save_connection", connectionPayload).catch(
+          () => undefined,
+        );
+      setConnections((current) =>
+        current.map((item) =>
+          item.id === updatedConnection.id ? updatedConnection : item,
+        ),
+      );
+      setSelectedConnection(updatedConnection);
+      setLaunchMessage("Connection updated.");
+      setEditMessage("");
+      go("connection-detail");
+    } catch {
+      setEditMessage(
+        password
+          ? "Relay could not update the password in your operating system credential store."
+          : "Relay could not save these connection changes.",
+      );
+    }
+  };
+  const startConnection = async () => {
+    if (!selectedConnection) return;
+    setLaunching(true);
+    setLaunchMessage("");
+    try {
+      const result = await invoke<{ message: string }>("launch_connection", {
+        connectionId: selectedConnection.id,
+      });
+      setLaunchMessage(result.message);
+    } catch {
+      setLaunchMessage(
+        "No supported RDP client is available. Choose or install one, then try again.",
+      );
+    } finally {
+      setLaunching(false);
+      void invoke<LaunchHistory[]>("list_launch_history", {
+        connectionId: null,
+      })
+        .then(setLaunchHistory)
+        .catch(() => undefined);
+    }
+  };
+  const reviewRdpFile = async (file: File) => {
+    if (!formClientId && !clients[0]) return;
+    try {
+      const review = await invoke<RdpReview>("review_rdp_import", {
+        input: {
+          filename: file.name,
+          content: await file.text(),
+          clientId: formClientId || clients[0].id,
+        },
+      });
+      setImportReview(review);
+    } catch {
+      setImportReview(undefined);
+    }
+  };
+  const commitRdpImport = async () => {
+    if (!importReview) return;
+    const clientId = formClientId || clients[0]?.id;
+    if (!clientId) return;
+    const item = {
+      id: crypto.randomUUID(),
+      clientId,
+      siteId: null,
+      folderId: null,
+      gatewayId: null,
+      name: importReview.connection.name,
+      host: importReview.connection.host,
+      port: importReview.connection.port,
+      username: importReview.connection.username ?? null,
+      domain: null,
+      display: importReview.connection.display,
+      notes: "",
+      favorite: false,
+      archived: false,
+      tagIds: [],
+    };
+    await invoke("commit_rdp_import", {
+      commit: {
+        connection: item,
+        replaceConnectionId: importReview.duplicateConnectionId ?? null,
+      },
+    });
+    const displayConnection: Connection = {
+      ...item,
+      username: item.username ?? "",
+    };
+    setConnections((current) => [
+      ...current.filter(
+        (connection) => connection.id !== importReview.duplicateConnectionId,
+      ),
+      displayConnection,
+    ]);
+    setImportReview(undefined);
+    setSelectedConnection(displayConnection);
+    go("connection-detail");
+  };
+  const exportSelectedConnection = async () => {
+    if (!selectedConnection) return;
+    try {
+      const content = await invoke<string>("export_rdp", {
+        connectionId: selectedConnection.id,
+      });
+      const url = URL.createObjectURL(
+        new Blob([content], { type: "application/x-rdp" }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${selectedConnection.name}.rdp`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setLaunchMessage("Relay could not export this connection.");
+    }
+  };
+  const toggleSelectedConnectionFavorite = () => {
+    if (!selectedConnection) return;
+    const updatedConnection = {
+      ...selectedConnection,
+      favorite: !selectedConnection.favorite,
+    };
+    setConnections((current) =>
+      current.map((connection) =>
+        connection.id === updatedConnection.id ? updatedConnection : connection,
+      ),
+    );
+    setSelectedConnection(updatedConnection);
+    void invoke("set_connection_favorite", {
+      id: updatedConnection.id,
+      favorite: updatedConnection.favorite,
+    }).catch(() => undefined);
+  };
+  const saveCredential = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const clientId = credentialClientId || clients[0]?.id;
+    if (!clientId) return;
+    try {
+      const credential = await invoke<Credential>("save_credential", {
+        item: {
+          id: crypto.randomUUID(),
+          clientId,
+          label: String(form.get("credentialLabel")).trim(),
+          username: String(form.get("credentialUsername")).trim() || null,
+          domain: String(form.get("credentialDomain")).trim() || null,
+          password: String(form.get("credentialPassword")),
+          archived: false,
+        },
+      });
+      setCredentials((items) => [...items, credential]);
+      setCredentialMessage(
+        "Credential saved in the operating system credential store.",
+      );
+      event.currentTarget.reset();
+    } catch {
+      setCredentialMessage(
+        "Relay could not save this credential. Check that your system credential store is available.",
+      );
+    }
+  };
+  const copyCredential = async (credentialId: string) => {
+    try {
+      const password = await invoke<string>("reveal_credential", {
+        credentialId,
+      });
+      await navigator.clipboard.writeText(password);
+      window.setTimeout(() => void navigator.clipboard.writeText(""), 30_000);
+      setCredentialMessage(
+        "Password copied. Relay will clear the clipboard in 30 seconds.",
+      );
+    } catch {
+      setCredentialMessage("Relay could not reveal or copy this password.");
+    }
+  };
+  const connectionTable = (items: Connection[]) =>
+    items.length ? (
+      <DataTable
+        rows={items.map((connection) => ({
+          id: connection.id,
+          name: connection.name,
+          client:
+            clients.find((client) => client.id === connection.clientId)?.name ??
+            "Unknown client",
+          host: connection.host,
+          username: connection.username || "Not set",
+        }))}
+        headers={[
+          { key: "name", header: "Connection" },
+          { key: "client", header: "Client" },
+          { key: "host", header: "Host" },
+          { key: "username", header: "Username" },
+          { key: "actions", header: "Actions" },
+        ]}
+        isSortable
+      >
+        {({ rows, headers, getHeaderProps, getRowProps, getTableProps }) => (
+          <TableContainer>
+            <Table {...getTableProps()} aria-label="Saved connections">
+              <TableHead>
+                <TableRow>
+                  {headers.map((header) => (
+                    <TableHeader
+                      {...getHeaderProps({ header })}
+                      isSortable={header.key !== "actions"}
+                    >
+                      {header.header}
+                    </TableHeader>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {rows.map((row) => {
+                  const connection = items.find((item) => item.id === row.id);
+                  if (!connection) return null;
+                  return (
+                    <TableRow
+                      {...getRowProps({ row })}
+                      className="relay-connection-row"
+                      tabIndex={0}
+                      aria-label={`Open ${connection.name}`}
+                      onClick={() => {
+                        setSelectedConnection(connection);
+                        go("connection-detail");
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedConnection(connection);
+                          go("connection-detail");
+                        }
+                      }}
+                    >
+                      {row.cells.map((cell) => (
+                        <TableCell key={cell.id}>
+                          {cell.info.header === "actions" ? (
+                            <Button
+                              kind="ghost"
+                              size="sm"
+                              renderIcon={Edit}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setSelectedConnection(connection);
+                                setDisplay(
+                                  connection.display ||
+                                    "Use RDP client default",
+                                );
+                                setEditMessage("");
+                                go("connection-edit");
+                              }}
+                            >
+                              Edit
+                            </Button>
+                          ) : (
+                            cell.value
+                          )}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </DataTable>
+    ) : (
+      <Tile className="relay-empty-state">
+        <Stack gap={6}>
+          <ConnectionSignal size={48} aria-hidden="true" />
+          <Stack gap={3}>
+            <h2 className="cds--heading-04">No saved connections</h2>
+            <p className="cds--body-01">
+              Start by creating a client organization, then add the first
+              connection.
+            </p>
+          </Stack>
+          <div>
+            <Button
+              renderIcon={Add}
+              onClick={() =>
+                go(clients.length ? "connection-form" : "client-form")
+              }
+            >
+              {clients.length ? "Add connection" : "Create client"}
+            </Button>
+          </div>
+        </Stack>
+      </Tile>
+    );
+  const renderPage = () => {
+    if (activePage === "client-form")
+      return (
+        <>
+          <ContextStrip />
+          <div className="relay-page-heading">
+            <p className="cds--label-01">Client library</p>
+            <h1 className="cds--heading-06">Create client</h1>
+            <p className="cds--body-02 relay-page-description">
+              Add the customer organization before saving its connections.
+            </p>
+          </div>
+          <form
+            key="client-form"
+            className="relay-form"
+            onSubmit={createClient}
+          >
+            <TextInput
+              id="client-name"
+              name="name"
+              labelText="Client name"
+              helperText="The customer organization shown throughout Relay."
+              required
+            />
+            <TextArea
+              id="client-notes"
+              name="notes"
+              labelText="Notes"
+              enableCounter
+              maxCount={500}
+            />
+            <ButtonSet>
+              <Button
+                kind="secondary"
+                type="button"
+                onClick={() => go("clients")}
+              >
+                Cancel
+              </Button>
+              <Button
+                kind="secondary"
+                type="submit"
+                name="afterSave"
+                value="clients"
+              >
+                Skip for now
+              </Button>
+              <Button type="submit">Save and add connection</Button>
+            </ButtonSet>
+          </form>
+        </>
+      );
+    if (activePage === "client-detail") {
+      const client = clients.find((item) => item.id === selectedClientId);
+      if (!client) return null;
+      const clientConnections = connections.filter(
+        (connection) => connection.clientId === client.id,
+      );
+      return (
+        <section className="relay-list-page" aria-labelledby="page-title">
+          <div className="relay-detail-heading">
+            <div className="relay-page-heading">
+              <p className="cds--label-01">Client library</p>
+              <h1 id="page-title" className="cds--heading-06">
+                {client.name}
+              </h1>
+              <p className="cds--body-02 relay-page-description">
+                {clientConnections.length} saved connection
+                {clientConnections.length === 1 ? "" : "s"} for this client.
+              </p>
+            </div>
+            <div className="relay-detail-actions">
+              <Button kind="secondary" onClick={() => go("clients")}>
+                Back to clients
+              </Button>
+              <Button
+                renderIcon={Add}
+                onClick={() => {
+                  setFormClientId(client.id);
+                  go("connection-form");
+                }}
+              >
+                Add connection
+              </Button>
+            </div>
+          </div>
+          <div className="relay-table">
+            {clientConnections.length ? (
+              connectionTable(clientConnections)
+            ) : (
+              <Tile className="relay-empty-state">
+                <Stack gap={5}>
+                  <ConnectionSignal size={48} aria-hidden="true" />
+                  <h2 className="cds--heading-04">No saved connections</h2>
+                  <Button
+                    renderIcon={Add}
+                    onClick={() => {
+                      setFormClientId(client.id);
+                      go("connection-form");
+                    }}
+                  >
+                    Add connection
+                  </Button>
+                </Stack>
+              </Tile>
+            )}
+          </div>
+        </section>
+      );
+    }
+    if (activePage === "connection-form")
+      return (
+        <>
+          <ContextStrip
+            client={clients.find((client) => client.id === formClientId)}
+          />
+          <div className="relay-page-heading">
+            <p className="cds--label-01">Connection details</p>
+            <h1 className="cds--heading-06">Add connection</h1>
+            <p className="cds--body-02 relay-page-description">
+              Save the server details and, if needed, its password in one step.
+            </p>
+          </div>
+          <form
+            key="connection-form"
+            className="relay-form"
+            onSubmit={createConnection}
+          >
+            <TextInput
+              id="connection-name"
+              name="connectionName"
+              labelText="Connection name"
+              required
+            />
+            <TextInput
+              id="connection-host"
+              name="host"
+              labelText="Host or IP address"
+              required
+            />
+            <TextInput
+              id="connection-username"
+              name="username"
+              labelText="Username"
+            />
+            <TextInput
+              id="connection-password"
+              name="password"
+              type="password"
+              labelText="Password"
+              helperText="Optional. Relay saves it in your operating system credential store, not in this connection or its RDP export."
+              autoComplete="new-password"
+            />
+            <Dropdown
+              id="connection-display"
+              titleText="Display"
+              label="Select a display setting"
+              items={["Windowed", "Full screen", "Use RDP client default"]}
+              initialSelectedItem="Use RDP client default"
+              onChange={({ selectedItem }) => setDisplay(String(selectedItem))}
+            />
+            <Checkbox
+              id="favorite"
+              name="favorite"
+              labelText="Add to favorites"
+            />
+            <ButtonSet>
+              <Button
+                kind="secondary"
+                type="button"
+                onClick={() => go("connections")}
+              >
+                Cancel
+              </Button>
+              <Button type="submit">Save connection</Button>
+            </ButtonSet>
+            {launchMessage ? (
+              <InlineNotification
+                hideCloseButton
+                lowContrast
+                kind="error"
+                title="Could not save connection"
+                subtitle={launchMessage}
+              />
+            ) : null}
+          </form>
+        </>
+      );
+    if (activePage === "connection-edit" && selectedConnection)
+      return (
+        <>
+          <ContextStrip
+            connection={selectedConnection}
+            client={selectedClient}
+          />
+          <div className="relay-detail-heading">
+            <div className="relay-page-heading">
+              <p className="cds--label-01">Connection details</p>
+              <h1 className="cds--heading-06">Edit connection</h1>
+              <p className="cds--body-02 relay-page-description">
+                Update the server address, sign-in name, password, or display
+                preference for {selectedConnection.name}.
+              </p>
+            </div>
+            <Button kind="secondary" onClick={() => go("connection-detail")}>
+              Cancel
+            </Button>
+          </div>
+          <form className="relay-form" onSubmit={editConnection}>
+            <TextInput
+              id="edit-connection-name"
+              name="connectionName"
+              labelText="Connection name"
+              defaultValue={selectedConnection.name}
+              required
+            />
+            <TextInput
+              id="edit-connection-host"
+              name="host"
+              labelText="Host or IP address"
+              defaultValue={selectedConnection.host}
+              required
+            />
+            <TextInput
+              id="edit-connection-username"
+              name="username"
+              labelText="Username"
+              defaultValue={selectedConnection.username}
+            />
+            <TextInput
+              id="edit-connection-password"
+              name="password"
+              type="password"
+              labelText="New password"
+              helperText="Leave blank to keep the current password. A new password is saved in your operating system credential store."
+              autoComplete="new-password"
+            />
+            <Dropdown
+              id="edit-connection-display"
+              titleText="Display"
+              label="Select a display setting"
+              items={["Windowed", "Full screen", "Use RDP client default"]}
+              selectedItem={display}
+              onChange={({ selectedItem }) => setDisplay(String(selectedItem))}
+            />
+            <ButtonSet>
+              <Button
+                kind="secondary"
+                type="button"
+                onClick={() => go("connection-detail")}
+              >
+                Cancel
+              </Button>
+              <Button type="submit">Save changes</Button>
+            </ButtonSet>
+            {editMessage ? (
+              <InlineNotification
+                hideCloseButton
+                lowContrast
+                kind="error"
+                title="Could not update connection"
+                subtitle={editMessage}
+              />
+            ) : null}
+          </form>
+        </>
+      );
+    if (activePage === "connection-detail" && selectedConnection)
+      return (
+        <>
+          <ContextStrip
+            connection={selectedConnection}
+            client={selectedClient}
+          />
+          <div className="relay-detail-heading">
+            <div>
+              <p className="cds--label-01">Connection</p>
+              <h1
+                className="cds--heading-06"
+                aria-label={selectedConnection.name}
+              >
+                {selectedConnection.name}
+              </h1>
+              <p className="cds--body-02 relay-page-description">
+                {selectedConnection.host}
+                {selectedConnection.username
+                  ? ` · ${selectedConnection.username}`
+                  : ""}
+              </p>
+            </div>
+            <div className="relay-detail-actions">
+              <Button
+                kind="secondary"
+                renderIcon={Edit}
+                onClick={() => {
+                  setDisplay(
+                    selectedConnection.display || "Use RDP client default",
+                  );
+                  setEditMessage("");
+                  go("connection-edit");
+                }}
+              >
+                Edit
+              </Button>
+              <Button
+                kind="ghost"
+                renderIcon={
+                  selectedConnection.favorite ? FavoriteFilled : Favorite
+                }
+                onClick={toggleSelectedConnectionFavorite}
+              >
+                {selectedConnection.favorite
+                  ? "Remove from favorites"
+                  : "Add to favorites"}
+              </Button>
+              <Button
+                renderIcon={ConnectionSignal}
+                onClick={startConnection}
+                disabled={launching}
+              >
+                {launching ? "Preparing connection" : "Connect"}
+              </Button>
+              <Button
+                kind="secondary"
+                renderIcon={ImportExport}
+                onClick={exportSelectedConnection}
+              >
+                Export RDP
+              </Button>
+            </div>
+          </div>
+          {launching ? (
+            <InlineLoading description="Starting the selected RDP client…" />
+          ) : null}
+          {launchMessage ? (
+            <InlineNotification
+              hideCloseButton
+              lowContrast
+              kind="info"
+              title="Connection launch"
+              subtitle={launchMessage}
+            />
+          ) : null}
+          <Tabs>
+            <TabList aria-label="Connection sections">
+              <Tab>Overview</Tab>
+              <Tab>Display and resources</Tab>
+              <Tab>Security</Tab>
+            </TabList>
+            <TabPanels>
+              <TabPanel>
+                <Tile>
+                  <dl className="relay-definition-list">
+                    <div>
+                      <dt>Client</dt>
+                      <dd>{selectedClient?.name}</dd>
+                    </div>
+                    <div>
+                      <dt>Host</dt>
+                      <dd>{selectedConnection.host}</dd>
+                    </div>
+                    <div>
+                      <dt>Username</dt>
+                      <dd>{selectedConnection.username || "Not set"}</dd>
+                    </div>
+                    <div>
+                      <dt>Display</dt>
+                      <dd>
+                        {selectedConnection.display || "Use RDP client default"}
+                      </dd>
+                    </div>
+                  </dl>
+                </Tile>
+              </TabPanel>
+              <TabPanel>
+                <InlineNotification
+                  lowContrast
+                  hideCloseButton
+                  kind="info"
+                  title="Adapter support"
+                  subtitle={
+                    adapterSupport
+                      .filter((adapter) => adapter.available)
+                      .map((adapter) => adapter.notes)
+                      .join(" ") ||
+                    "No supported RDP client is currently available on this computer."
+                  }
+                />
+              </TabPanel>
+              <TabPanel>
+                <Stack gap={5}>
+                  <InlineNotification
+                    lowContrast
+                    hideCloseButton
+                    kind={vaultStatus?.available ? "success" : "warning"}
+                    title="Credential store"
+                    subtitle={
+                      vaultStatus?.message ??
+                      "Credential store status is unavailable outside the desktop app."
+                    }
+                  />
+                  <Tile>
+                    <Stack gap={5}>
+                      <dl className="relay-definition-list">
+                        <div>
+                          <dt>Password</dt>
+                          <dd>
+                            {selectedConnection.credentialId
+                              ? "Saved securely"
+                              : "Not saved"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Credential</dt>
+                          <dd>
+                            {selectedCredential?.label ??
+                              (selectedConnection.credentialId
+                                ? "Saved credential"
+                                : "None")}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Username</dt>
+                          <dd>{selectedConnection.username || "Not set"}</dd>
+                        </div>
+                      </dl>
+                      <div>
+                        <Button
+                          kind="secondary"
+                          renderIcon={Edit}
+                          onClick={() => {
+                            setDisplay(
+                              selectedConnection.display ||
+                                "Use RDP client default",
+                            );
+                            setEditMessage("");
+                            go("connection-edit");
+                          }}
+                        >
+                          {selectedConnection.credentialId
+                            ? "Change password"
+                            : "Set password"}
+                        </Button>
+                      </div>
+                    </Stack>
+                  </Tile>
+                </Stack>
+              </TabPanel>
+            </TabPanels>
+          </Tabs>
+        </>
+      );
+    const page = pageCopy[activePage as NavigationPage];
+    if (activePage === "connections" || activePage === "favorites") {
+      const rows =
+        activePage === "favorites"
+          ? visibleConnections.filter((connection) => connection.favorite)
+          : visibleConnections.filter(
+              (connection) =>
+                connectionClientFilter === "All clients" ||
+                connection.clientId === connectionClientFilter,
+            );
+      const pagedRows = rows.slice(
+        (connectionPage - 1) * connectionPageSize,
+        connectionPage * connectionPageSize,
+      );
+      return (
+        <section className="relay-list-page" aria-labelledby="page-title">
+          <div className="relay-detail-heading">
+            <div className="relay-page-heading">
+              <p className="cds--label-01">Relay library</p>
+              <h1 id="page-title" className="cds--heading-06">
+                {page.title}
+              </h1>
+              <p className="cds--body-02 relay-page-description">
+                {page.description}
+              </p>
+            </div>
+            <Button
+              renderIcon={Add}
+              onClick={() =>
+                go(clients.length ? "connection-form" : "client-form")
+              }
+            >
+              Add connection
+            </Button>
+          </div>
+          {connections.length ? (
+            <div className="relay-list-body">
+              <Search
+                id="connection-search"
+                labelText="Search connections"
+                placeholder="Search connections"
+                value={query}
+                onChange={(event) => setQuery(event.currentTarget.value)}
+              />
+              <Dropdown
+                id="connection-client-filter"
+                titleText="Client"
+                label="All clients"
+                items={[
+                  { id: "All clients", label: "All clients" },
+                  ...clients.map((client) => ({
+                    id: client.id,
+                    label: client.name,
+                  })),
+                ]}
+                itemToString={(item) => item?.label ?? ""}
+                selectedItem={
+                  connectionClientFilter === "All clients"
+                    ? { id: "All clients", label: "All clients" }
+                    : clients
+                        .filter(
+                          (client) => client.id === connectionClientFilter,
+                        )
+                        .map((client) => ({
+                          id: client.id,
+                          label: client.name,
+                        }))[0]
+                }
+                onChange={({ selectedItem }) =>
+                  setConnectionClientFilter(selectedItem?.id ?? "All clients")
+                }
+              />
+              <div className="relay-table">{connectionTable(pagedRows)}</div>
+              <Pagination
+                className="relay-list-pagination"
+                totalItems={rows.length}
+                page={connectionPage}
+                pageSize={connectionPageSize}
+                pageSizes={[10, 20, 50]}
+                onChange={({ page, pageSize }) => {
+                  setConnectionPage(page);
+                  setConnectionPageSize(pageSize);
+                }}
+              />
+            </div>
+          ) : (
+            connectionTable(rows)
+          )}
+        </section>
+      );
+    }
+    if (activePage === "clients")
+      return (
+        <>
+          <div className="relay-detail-heading">
+            <div className="relay-page-heading">
+              <p className="cds--label-01">Relay library</p>
+              <h1 className="cds--heading-06">Clients</h1>
+              <p className="cds--body-02 relay-page-description">
+                Keep customer organizations and their connection libraries
+                distinct.
+              </p>
+            </div>
+            <Button renderIcon={Add} onClick={() => go("client-form")}>
+              Create client
+            </Button>
+          </div>
+          {clients.length ? (
+            <div className="relay-client-grid">
+              {clients.map((client) => (
+                <Tile key={client.id}>
+                  <Stack gap={4}>
+                    <div>
+                      <ClickableTile
+                        className="relay-client-tile"
+                        href={`#client-${client.id}`}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          setSelectedClientId(client.id);
+                          go("client-detail");
+                        }}
+                      >
+                        <h2 className="cds--heading-03">{client.name}</h2>
+                      </ClickableTile>
+                    </div>
+                    <p className="cds--body-01">
+                      {
+                        connections.filter(
+                          (connection) => connection.clientId === client.id,
+                        ).length
+                      }{" "}
+                      saved connections
+                    </p>
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setFormClientId(client.id);
+                        go("connection-form");
+                      }}
+                    >
+                      Add connection
+                    </Button>
+                  </Stack>
+                </Tile>
+              ))}
+            </div>
+          ) : (
+            <Tile className="relay-empty-state">
+              <Stack gap={5}>
+                <UserMultiple size={48} aria-hidden="true" />
+                <h2 className="cds--heading-04">No clients yet</h2>
+                <Button onClick={() => go("client-form")}>Create client</Button>
+              </Stack>
+            </Tile>
+          )}
+        </>
+      );
+    if (activePage === "import-export")
+      return (
+        <section className="relay-list-page" aria-labelledby="page-title">
+          <div className="relay-page-heading">
+            <p className="cds--label-01">Relay library</p>
+            <h1 id="page-title" className="cds--heading-06">
+              Import and export
+            </h1>
+            <p className="cds--body-02 relay-page-description">
+              RDP files are reviewed before saving. Passwords, certificates, and
+              publisher data are never imported or exported.
+            </p>
+          </div>
+          {!clients.length ? (
+            <InlineNotification
+              hideCloseButton
+              lowContrast
+              kind="info"
+              title="Create a client first"
+              subtitle="Imported connections must belong to a client organization."
+            />
+          ) : (
+            <>
+              <Dropdown
+                id="import-client"
+                titleText="Import into client"
+                label="Choose a client"
+                items={clients}
+                itemToString={(item) => item?.name ?? ""}
+                selectedItem={clients.find(
+                  (client) => client.id === (formClientId || clients[0]?.id),
+                )}
+                onChange={({ selectedItem }) =>
+                  setFormClientId(selectedItem?.id ?? "")
+                }
+              />
+              <FileUploaderButton
+                labelText="Choose RDP file"
+                accept={[".rdp"]}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void reviewRdpFile(file);
+                }}
+              />
+              {importReview ? (
+                <Tile>
+                  <Stack gap={5}>
+                    <div>
+                      <h2 className="cds--heading-03">
+                        Review {importReview.filename}
+                      </h2>
+                      <p className="cds--body-01">
+                        {importReview.connection.host}:
+                        {importReview.connection.port} ·{" "}
+                        {importReview.connection.username || "No username"}
+                      </p>
+                    </div>
+                    {importReview.duplicateConnectionId ? (
+                      <InlineNotification
+                        hideCloseButton
+                        lowContrast
+                        kind="warning"
+                        title="Possible duplicate"
+                        subtitle="Saving will replace the matching host, port, and username for this client."
+                      />
+                    ) : null}
+                    {importReview.warnings.length ||
+                    importReview.unsupportedKeys.length ? (
+                      <InlineNotification
+                        hideCloseButton
+                        lowContrast
+                        kind="warning"
+                        title="Some settings were excluded"
+                        subtitle={[
+                          ...importReview.warnings,
+                          ...importReview.unsupportedKeys.map(
+                            (key) => `Unsupported setting: ${key}.`,
+                          ),
+                        ].join(" ")}
+                      />
+                    ) : null}
+                    <Button onClick={() => void commitRdpImport()}>
+                      Save reviewed connection
+                    </Button>
+                  </Stack>
+                </Tile>
+              ) : null}
+            </>
+          )}
+        </section>
+      );
+    if (activePage === "credentials")
+      return (
+        <section className="relay-list-page" aria-labelledby="page-title">
+          <div className="relay-page-heading">
+            <p className="cds--label-01">Relay security</p>
+            <h1 id="page-title" className="cds--heading-06">
+              Credentials
+            </h1>
+            <p className="cds--body-02 relay-page-description">
+              Passwords are kept by your operating system, never in Relay’s
+              library or RDP exports.
+            </p>
+          </div>
+          <InlineNotification
+            hideCloseButton
+            lowContrast
+            kind={vaultStatus?.available ? "success" : "warning"}
+            title="Credential store"
+            subtitle={
+              vaultStatus?.message ??
+              "Checking the operating system credential store…"
+            }
+          />
+          {credentialMessage ? (
+            <InlineNotification
+              hideCloseButton
+              lowContrast
+              kind="info"
+              title="Credential action"
+              subtitle={credentialMessage}
+            />
+          ) : null}
+          {clients.length ? (
+            <Tile>
+              <form onSubmit={(event) => void saveCredential(event)}>
+                <Stack gap={5}>
+                  <h2 className="cds--heading-03">Save credential</h2>
+                  <Dropdown
+                    id="credential-client"
+                    titleText="Client"
+                    label="Choose a client"
+                    items={clients}
+                    selectedItem={clients.find(
+                      (client) =>
+                        client.id === (credentialClientId || clients[0]?.id),
+                    )}
+                    itemToString={(item) => item?.name ?? ""}
+                    onChange={({ selectedItem }) =>
+                      setCredentialClientId(selectedItem?.id ?? "")
+                    }
+                  />
+                  <TextInput
+                    id="credential-label"
+                    name="credentialLabel"
+                    labelText="Credential label"
+                    required
+                  />
+                  <TextInput
+                    id="credential-username"
+                    name="credentialUsername"
+                    labelText="Username"
+                  />
+                  <TextInput
+                    id="credential-domain"
+                    name="credentialDomain"
+                    labelText="Domain"
+                  />
+                  <TextInput
+                    id="credential-password"
+                    name="credentialPassword"
+                    type="password"
+                    labelText="Password"
+                    required
+                    autoComplete="new-password"
+                  />
+                  <Button type="submit" disabled={!vaultStatus?.available}>
+                    Save credential
+                  </Button>
+                </Stack>
+              </form>
+            </Tile>
+          ) : (
+            <InlineNotification
+              hideCloseButton
+              lowContrast
+              kind="info"
+              title="Create a client first"
+              subtitle="Credentials are always scoped to a client organization."
+            />
+          )}
+          {credentials.length ? (
+            <div className="relay-client-grid">
+              {credentials.map((credential) => (
+                <Tile key={credential.id}>
+                  <Stack gap={4}>
+                    <div>
+                      <h2 className="cds--heading-03">{credential.label}</h2>
+                      <p className="cds--body-01">
+                        {credential.domain ? `${credential.domain}\\` : ""}
+                        {credential.username || "No username"}
+                      </p>
+                    </div>
+                    <Button
+                      kind="secondary"
+                      renderIcon={Copy}
+                      onClick={() => void copyCredential(credential.id)}
+                    >
+                      Copy password
+                    </Button>
+                  </Stack>
+                </Tile>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      );
+    if (activePage === "recent")
+      return (
+        <section className="relay-list-page" aria-labelledby="page-title">
+          <div className="relay-page-heading">
+            <p className="cds--label-01">Relay library</p>
+            <h1 id="page-title" className="cds--heading-06">
+              Recent
+            </h1>
+            <p className="cds--body-02 relay-page-description">
+              Local launch history contains connection names and outcome only;
+              it never includes passwords.
+            </p>
+          </div>
+          {launchHistory.length ? (
+            <div className="relay-table">
+              <DataTable
+                rows={launchHistory.map((entry) => ({
+                  id: String(entry.id),
+                  connection:
+                    connections.find(
+                      (connection) => connection.id === entry.connectionId,
+                    )?.name ?? "Deleted connection",
+                  adapter: entry.adapter,
+                  outcome: entry.success ? "Started" : "Not started",
+                }))}
+                headers={[
+                  { key: "connection", header: "Connection" },
+                  { key: "adapter", header: "RDP client" },
+                  { key: "outcome", header: "Outcome" },
+                ]}
+              >
+                {({
+                  rows,
+                  headers,
+                  getHeaderProps,
+                  getRowProps,
+                  getTableProps,
+                }) => (
+                  <Table {...getTableProps()} aria-label="Recent launches">
+                    <TableHead>
+                      <TableRow>
+                        {headers.map((header) => (
+                          <TableHeader {...getHeaderProps({ header })}>
+                            {header.header}
+                          </TableHeader>
+                        ))}
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {rows.map((row) => (
+                        <TableRow {...getRowProps({ row })}>
+                          {row.cells.map((cell) => (
+                            <TableCell key={cell.id}>{cell.value}</TableCell>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </DataTable>
+            </div>
+          ) : (
+            <Tile className="relay-empty-state">
+              <Stack gap={4}>
+                <RecentlyViewed size={48} aria-hidden="true" />
+                <h2 className="cds--heading-04">No launch history yet</h2>
+                <p className="cds--body-01">
+                  Start a saved connection to see its local launch outcome here.
+                </p>
+              </Stack>
+            </Tile>
+          )}
+        </section>
+      );
+    if (activePage === "settings")
+      return (
+        <section className="relay-list-page" aria-labelledby="page-title">
+          <div className="relay-page-heading">
+            <p className="cds--label-01">Relay preferences</p>
+            <h1 id="page-title" className="cds--heading-06">
+              Settings
+            </h1>
+            <p className="cds--body-02 relay-page-description">
+              Choose the interface appearance and review the RDP clients Relay
+              can use on this computer.
+            </p>
+          </div>
+          <Stack gap={6}>
+            <Tile>
+              <Stack gap={5}>
+                <h2 className="cds--heading-03">Appearance</h2>
+                <Dropdown
+                  id="appearance"
+                  titleText="Color theme"
+                  label="Choose a color theme"
+                  items={[
+                    { id: "g10", label: "Light" },
+                    { id: "g100", label: "Dark" },
+                  ]}
+                  itemToString={(item) => item?.label ?? ""}
+                  selectedItem={
+                    theme === "g10"
+                      ? { id: "g10", label: "Light" }
+                      : { id: "g100", label: "Dark" }
+                  }
+                  onChange={({ selectedItem }) =>
+                    setTheme(selectedItem?.id === "g100" ? "g100" : "g10")
+                  }
+                />
+              </Stack>
+            </Tile>
+            <Tile>
+              <Stack gap={5}>
+                <h2 className="cds--heading-03">RDP client availability</h2>
+                {adapterSupport.length ? (
+                  adapterSupport.map((adapter) => (
+                    <InlineNotification
+                      key={adapter.id}
+                      hideCloseButton
+                      lowContrast
+                      kind={adapter.available ? "success" : "info"}
+                      title={adapter.label}
+                      subtitle={`${adapter.available ? "Available." : "Not available."} ${adapter.notes}`}
+                    />
+                  ))
+                ) : (
+                  <InlineNotification
+                    hideCloseButton
+                    lowContrast
+                    kind="info"
+                    title="Desktop check required"
+                    subtitle="Client availability is checked when Relay runs as a desktop application."
+                  />
+                )}
+              </Stack>
+            </Tile>
+          </Stack>
+        </section>
+      );
+    return (
+      <>
+        <div className="relay-page-heading">
+          <p className="cds--label-01">Relay library</p>
+          <h1 className="cds--heading-06">{page.title}</h1>
+          <p className="cds--body-02 relay-page-description">
+            {page.description}
+          </p>
+        </div>
+        <InlineNotification
+          hideCloseButton
+          lowContrast
+          kind="info"
+          title="Available in a later stage"
+          subtitle="This workflow is outside the current RDP import, export, and launch stage."
+        />
+      </>
+    );
+  };
+  return (
+    <Theme theme={theme}>
+      <Header aria-label="Relay">
+        <Tag className="relay-stage-tag" type="blue">
+          Stage 3 — RDP adapters
+        </Tag>
+      </Header>
+      <SideNav aria-label="Primary navigation" expanded isPersistent>
+        <SideNavItems>
+          {navigation.map((item) => (
+            <SideNavLink
+              href={`#${item.id}`}
+              isActive={activePage === item.id}
+              key={item.id}
+              onClick={() => go(item.id)}
+              renderIcon={item.icon}
+            >
+              {item.label}
+            </SideNavLink>
+          ))}
+        </SideNavItems>
+      </SideNav>
+      <Content id="main-content" className="relay-content">
+        <Grid fullWidth>
+          <Column sm={4} md={8} lg={16} xlg={16}>
+            <Stack gap={7}>{renderPage()}</Stack>
+          </Column>
+        </Grid>
+      </Content>
+    </Theme>
+  );
+}
+export default App;

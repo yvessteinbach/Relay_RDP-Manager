@@ -1,0 +1,9 @@
+node_modules/
+.npm-cache/
+dist/
+docs/build/
+docs/.docusaurus/
+src-tauri/target/
+src-tauri/gen/
+package-lock.json
+LICENSE
