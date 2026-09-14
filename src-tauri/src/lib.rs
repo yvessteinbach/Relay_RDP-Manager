@@ -1304,7 +1304,10 @@ fn store_windows_rdp_credential(
         fn CredWriteW(credential: *const CredentialW, flags: u32) -> i32;
     }
 
-    const CRED_TYPE_DOMAIN_PASSWORD: u32 = 2;
+    // mstsc looks up its `TERMSRV/<host>` entry as a generic credential, the
+    // same form created by `cmdkey /generic`. A domain-password entry is not
+    // a substitute and can be rejected by current Windows security policies.
+    const CRED_TYPE_GENERIC: u32 = 1;
     const CRED_PERSIST_LOCAL_MACHINE: u32 = 2;
 
     let mut target = windows_rdp_credential_target(&connection.host)
@@ -1324,7 +1327,7 @@ fn store_windows_rdp_credential(
     let mut password_blob = password.encode_utf16().collect::<Vec<_>>();
     let native_credential = CredentialW {
         flags: 0,
-        credential_type: CRED_TYPE_DOMAIN_PASSWORD,
+        credential_type: CRED_TYPE_GENERIC,
         target_name: target.as_mut_ptr(),
         comment: std::ptr::null_mut(),
         last_written: FileTime {
