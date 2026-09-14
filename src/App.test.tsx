@@ -78,9 +78,17 @@ describe("Relay Stage 5 interaction model", () => {
       "server.example.test",
     );
     await user.click(screen.getByRole("button", { name: "Save connection" }));
-    await user.click(screen.getByRole("button", { name: "Add to favorites" }));
+    await user.click(
+      screen.getByRole("button", { name: "Additional actions" }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Add to favorites" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Additional actions" }),
+    );
     expect(
-      screen.getByRole("button", { name: "Remove from favorites" }),
+      await screen.findByRole("menuitem", { name: "Remove from favorites" }),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Favorites" }));
     expect(screen.getByText("Example server")).toBeInTheDocument();
@@ -99,6 +107,7 @@ describe("Relay Stage 5 interaction model", () => {
     await user.click(screen.getByRole("link", { name: "All connections" }));
     await user.click(screen.getByText("RD01"));
     expect(screen.getByRole("heading", { name: "RD01" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "All connections" }));
     await user.click(screen.getByRole("button", { name: "Edit" }));
     const host = screen.getByLabelText("Host or IP address");
     await user.clear(host);
@@ -149,6 +158,7 @@ describe("Relay Stage 5 interaction model", () => {
       screen.getByRole("link", { name: "All connections" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /navigation/i })).toBeNull();
+    expect(screen.getByRole("link", { name: "Relay" })).toBeInTheDocument();
     expect(screen.getByText("Stage 5 — Public beta")).toBeInTheDocument();
   });
   it("has no automatically detectable accessibility violations", async () => {

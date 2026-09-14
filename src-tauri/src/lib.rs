@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -10,6 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
+use uuid::Uuid;
 
 const LATEST_SCHEMA_VERSION: i64 = 3;
 const BACKUP_FORMAT_VERSION: u32 = 1;
@@ -259,8 +261,8 @@ pub struct ImportCommit {
 }
 
 /// A portable, secret-free archive. Credential metadata is retained so that
-/// connections remain linked after restore, but passwords remain in the OS
-/// vault and must be entered again if the vault is unavailable.
+/// connections remain linked after restore, but passwords must be entered
+/// again and are never reused from the OS vault.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupArchive {
@@ -716,6 +718,10 @@ impl Library {
     }
     pub fn restore_backup(&self, archive: BackupArchive) -> Result<RestoreResult, RelayError> {
         validate_backup(&archive)?;
+        // Backup credential IDs are untrusted names for OS-vault entries. Give
+        // restored credentials fresh local IDs before any restored connection
+        // can use them, so a backup cannot redirect a pre-existing password.
+        let data = isolate_backup_credentials(&archive.data);
         // Validate every relationship against a clean, current-schema library
         // before the live library is touched.
         let mut validation = SqliteConnection::open_in_memory().map_err(RelayError::database)?;
@@ -723,12 +729,12 @@ impl Library {
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(RelayError::database)?;
         migrate(&validation)?;
-        replace_backup_data(&mut validation, &archive.data)?;
+        replace_backup_data(&mut validation, &data)?;
 
         let safety_backup = self.create_backup()?;
         self.write_safety_backup(&safety_backup)?;
         let mut db = self.db();
-        replace_backup_data(&mut db, &archive.data)?;
+        replace_backup_data(&mut db, &data)?;
         Ok(RestoreResult {
             safety_backup,
             restored_connections: archive.data.connections.len(),
@@ -876,7 +882,7 @@ impl Library {
         Ok(adapter_support_matrix())
     }
     pub fn launch_connection(&self, connection_id: String) -> Result<LaunchResult, RelayError> {
-        let connection = self.connection_by_id(&connection_id)?;
+        let mut connection = self.connection_by_id(&connection_id)?;
         let support = adapter_support_matrix()
             .into_iter()
             .find(|item| item.available)
@@ -899,17 +905,36 @@ impl Library {
         // mstsc reads saved RDP credentials from Windows Credential Manager.
         // Populate its per-target entry immediately before launch so the secret
         // never has to be passed through a process argument or RDP file.
-        #[cfg(target_os = "windows")]
-        if support.id == "mstsc" {
-            if let Some(credential_id) = connection.credential_id.as_deref() {
-                let prepared = self.credential_by_id(credential_id).and_then(|credential| {
+        // Credentials can have a more specific username/domain than the
+        // connection itself. Give every adapter that non-secret identity so
+        // Windows Credential Manager and the macOS RDP URI refer to the same
+        // account. The password remains inside the OS credential store.
+        if let Some(credential_id) = connection.credential_id.as_deref() {
+            let credential = self.credential_by_id(credential_id)?;
+            if connection
+                .username
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                connection.username = credential.username.clone();
+            }
+            if connection
+                .domain
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                connection.domain = credential.domain.clone();
+            }
+            #[cfg(target_os = "windows")]
+            if support.id == "mstsc" {
+                let prepared = {
                     get_secret(credential_id).and_then(|mut password| {
                         let result =
                             store_windows_rdp_credential(&connection, &credential, &password);
                         clear_secret(&mut password);
                         result
                     })
-                });
+                };
                 if let Err(error) = prepared {
                     self.record_launch(
                         connection_id,
@@ -942,7 +967,6 @@ impl Library {
         .find(|item| item.id == id)
         .ok_or_else(|| RelayError::validation("Connection was not found."))
     }
-    #[cfg(target_os = "windows")]
     fn credential_by_id(&self, id: &str) -> Result<CredentialReference, RelayError> {
         let db = self.db();
         db.query_row(
@@ -959,6 +983,35 @@ impl Library {
         )
         .map_err(|_| RelayError::validation("The saved credential was not found."))
     }
+}
+
+fn isolate_backup_credentials(data: &BackupData) -> BackupData {
+    let mut restored = data.clone();
+    let credential_ids: HashMap<_, _> = restored
+        .credentials
+        .iter_mut()
+        .map(|credential| {
+            let original = credential.id.clone();
+            credential.id = format!("restored-{}", Uuid::new_v4());
+            (original, credential.id.clone())
+        })
+        .collect();
+
+    for gateway in &mut restored.gateways {
+        if let Some(id) = gateway.credential_id.as_mut() {
+            if let Some(replacement) = credential_ids.get(id) {
+                *id = replacement.clone();
+            }
+        }
+    }
+    for connection in &mut restored.connections {
+        if let Some(id) = connection.credential_id.as_mut() {
+            if let Some(replacement) = credential_ids.get(id) {
+                *id = replacement.clone();
+            }
+        }
+    }
+    restored
 }
 
 fn parse_rdp(
@@ -1089,7 +1142,10 @@ fn serialize_rdp(connection: &Connection) -> String {
         }
         _ => lines.push("screen mode id:i:1".into()),
     }
-    lines.push("prompt for credentials:i:1".into());
+    // A value of 1 instructs compatible RDP clients to ask every time, even
+    // if they already have the target's credential. Let the native client use
+    // its secure credential store instead.
+    lines.push("prompt for credentials:i:0".into());
     lines.join("\r\n") + "\r\n"
 }
 fn executable_available(name: &str) -> bool {
@@ -1121,23 +1177,60 @@ fn macos_windows_app_available() -> bool {
         false
     }
 }
-fn rdp_url(connection: &Connection) -> String {
-    let encoded_host = connection
-        .host
-        .bytes()
-        .fold(String::new(), |mut value, byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
-                value.push(byte as char);
-            } else {
-                use std::fmt::Write;
-                let _ = write!(value, "%{byte:02X}");
-            }
-            value
-        });
+fn percent_encode_rdp_value(value: &str) -> String {
+    value.bytes().fold(String::new(), |mut value, byte| {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
+            value.push(byte as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(value, "%{byte:02X}");
+        }
+        value
+    })
+}
+
+fn rdp_url_attribute(name: &str, value_type: char, value: &str) -> String {
     format!(
-        "rdp://full%20address=s%3A{encoded_host}%3A{}",
-        connection.port
+        "{}={value_type}%3A{}",
+        percent_encode_rdp_value(name),
+        percent_encode_rdp_value(value)
     )
+}
+
+fn rdp_url(connection: &Connection) -> String {
+    let mut attributes = vec![rdp_url_attribute(
+        "full address",
+        's',
+        &format!("{}:{}", connection.host, connection.port),
+    )];
+    if let Some(username) = connection
+        .username
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        attributes.push(rdp_url_attribute("username", 's', username));
+    }
+    if let Some(domain) = connection
+        .domain
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        attributes.push(rdp_url_attribute("domain", 's', domain));
+    }
+    match connection.display.as_str() {
+        "Full screen" => attributes.push(rdp_url_attribute("screen mode id", 'i', "2")),
+        "Multi-monitor" => {
+            attributes.push(rdp_url_attribute("screen mode id", 'i', "2"));
+            attributes.push(rdp_url_attribute("use multimon", 'i', "1"));
+        }
+        _ => attributes.push(rdp_url_attribute("screen mode id", 'i', "1")),
+    }
+    attributes.push(rdp_url_attribute(
+        "prompt for credentials on client",
+        'i',
+        "0",
+    ));
+    format!("rdp://{}", attributes.join("&"))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1301,6 +1394,24 @@ fn adapter_command(
         "mstsc" => {
             let mut command = Command::new("mstsc");
             command.arg(format!("/v:{}:{}", connection.host, connection.port));
+            if let Some(username) = connection
+                .username
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                let username = if username.contains('\\') || username.contains('@') {
+                    username.to_owned()
+                } else if let Some(domain) = connection
+                    .domain
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    format!("{domain}\\{username}")
+                } else {
+                    username.to_owned()
+                };
+                command.arg(format!("/u:{username}"));
+            }
             match connection.display.as_str() {
                 "Full screen" => {
                     command.arg("/f");
@@ -1333,7 +1444,9 @@ fn adapter_command(
         "macos-open" => {
             if macos_windows_app_available() {
                 let mut command = Command::new("open");
-                command.args(["-n", "-a", "Windows App", "--"]);
+                // Let Launch Services route the RDP URI to its registered
+                // handler. Passing a URI after `open -a` treats it as a file
+                // on some macOS releases and drops its RDP attributes.
                 command.arg(rdp_url(connection));
                 return Ok(command);
             }
@@ -1809,6 +1922,7 @@ mod tests {
             ..connection()
         });
         assert!(text.contains("full address:s:gateway.example.test:3389"));
+        assert!(text.contains("prompt for credentials:i:0"));
         assert!(!text.contains("do not disclose"));
         assert!(!text.to_lowercase().contains("password 51"));
     }
@@ -1821,7 +1935,7 @@ mod tests {
         };
         assert_eq!(
             rdp_url(&connection),
-            "rdp://full%20address=s%3A%5B2001%3Adb8%3A%3A1%5D%3A3390"
+            "rdp://full%20address=s%3A%5B2001%3Adb8%3A%3A1%5D%3A3390&username=s%3Aadmin&screen%20mode%20id=i%3A1&prompt%20for%20credentials%20on%20client=i%3A0"
         );
     }
     #[test]
@@ -1875,7 +1989,7 @@ mod tests {
                 .get_args()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
-            ["/v:gateway.example.test:3389"]
+            ["/v:gateway.example.test:3389", "/u:admin"]
         );
         let profile = protected_rdp_profile(&connection()).unwrap();
         let macos = adapter_command("macos-open", &connection(), Some(profile.as_ref())).unwrap();
@@ -1888,11 +2002,7 @@ mod tests {
             assert_eq!(
                 macos_args,
                 [
-                    "-n",
-                    "-a",
-                    "Windows App",
-                    "--",
-                    "rdp://full%20address=s%3Agateway.example.test%3A3389"
+                    "rdp://full%20address=s%3Agateway.example.test%3A3389&username=s%3Aadmin&screen%20mode%20id=i%3A1&prompt%20for%20credentials%20on%20client=i%3A0"
                 ]
             );
         } else {
@@ -1964,6 +2074,68 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+    #[test]
+    fn restore_rekeys_credentials_before_relinking_connections() {
+        let library = Library::open(":memory:").unwrap();
+        library.save_client(client()).unwrap();
+        // This models a password that remains in the OS vault after restore.
+        library.db().execute("INSERT INTO credentials(id,client_id,label,secret_ref,archived,created_at,updated_at) VALUES(?1,'client','Saved','vault:saved-credential',0,0,0)", ["saved-credential"]).unwrap();
+
+        let mut archive = BackupArchive {
+            format_version: BACKUP_FORMAT_VERSION,
+            created_at: 0,
+            checksum: String::new(),
+            data: BackupData {
+                clients: vec![client()],
+                sites: vec![],
+                folders: vec![],
+                credentials: vec![CredentialReference {
+                    id: "saved-credential".into(),
+                    client_id: "client".into(),
+                    label: "Restored metadata".into(),
+                    username: Some("admin".into()),
+                    domain: None,
+                    archived: false,
+                }],
+                gateways: vec![Gateway {
+                    id: "gateway".into(),
+                    client_id: "client".into(),
+                    name: "Gateway".into(),
+                    host: "gateway.example.test".into(),
+                    port: 3389,
+                    username: None,
+                    credential_id: Some("saved-credential".into()),
+                    archived: false,
+                }],
+                tags: vec![],
+                connections: vec![Connection {
+                    gateway_id: Some("gateway".into()),
+                    credential_id: Some("saved-credential".into()),
+                    tag_ids: vec![],
+                    ..connection()
+                }],
+                launch_history: vec![],
+            },
+        };
+        archive.checksum = backup_checksum(&archive.data).unwrap();
+
+        library.restore_backup(archive).unwrap();
+
+        let restored_credential = library.list_credentials(None).unwrap().pop().unwrap();
+        assert_ne!(restored_credential.id, "saved-credential");
+        assert!(restored_credential.id.starts_with("restored-"));
+        assert_eq!(
+            library.list_gateways(None).unwrap()[0].credential_id,
+            Some(restored_credential.id.clone())
+        );
+        assert_eq!(
+            library
+                .list_connections(ConnectionQuery::default())
+                .unwrap()[0]
+                .credential_id,
+            Some(restored_credential.id)
         );
     }
     #[test]

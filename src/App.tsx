@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { setTheme as setApplicationTheme } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Button,
@@ -10,10 +11,14 @@ import {
   DataTable,
   Dropdown,
   FileUploaderButton,
+  FeatureFlags,
   Grid,
   Header,
+  HeaderName,
   InlineLoading,
   InlineNotification,
+  OverflowMenu,
+  OverflowMenuItem,
   Pagination,
   Search,
   SideNav,
@@ -40,52 +45,34 @@ import {
 } from "@carbon/react";
 import {
   Add,
-  Certificate,
   Copy,
   ConnectionSignal,
   Edit,
   Favorite,
   FavoriteFilled,
-  ImportExport,
   RecentlyViewed,
-  Settings,
   UserMultiple,
 } from "@carbon/icons-react";
-
-type PageId =
-  | "connections"
-  | "clients"
-  | "favorites"
-  | "recent"
-  | "import-export"
-  | "credentials"
-  | "settings"
-  | "client-form"
-  | "client-detail"
-  | "connection-form"
-  | "connection-edit"
-  | "connection-detail";
-type Client = { id: string; name: string; notes: string };
-type Connection = {
-  id: string;
-  name: string;
-  host: string;
-  username: string;
-  clientId: string;
-  favorite: boolean;
-  display: string;
-  credentialId?: string | null;
-  port?: number;
-  domain?: string | null;
-  notes?: string;
-  archived?: boolean;
-  tagIds?: string[];
-};
-type StoredConnection = Connection & {
-  siteId?: string | null;
-  folderId?: string | null;
-  gatewayId?: string | null;
-};
+import { navigation, pageCopy } from "./app/navigation";
+import type {
+  Client,
+  Connection,
+  NavigationPage,
+  PageId,
+  StoredConnection,
+} from "./app/types";
+import { ContextStrip } from "./components/ContextStrip";
+import {
+  ClientDetailPage,
+  ClientFormPage,
+  ClientsPage,
+} from "./pages/ClientsPage";
+import {
+  ConnectionDetailPage,
+  ConnectionEditPage,
+  ConnectionFormPage,
+} from "./pages/ConnectionPages";
+import { ConnectionsPage } from "./pages/ConnectionsPage";
 type RdpReview = {
   filename: string;
   connection: {
@@ -132,86 +119,6 @@ type LaunchHistory = {
   success: boolean;
   category?: string | null;
 };
-type NavigationPage = Exclude<
-  PageId,
-  | "client-form"
-  | "client-detail"
-  | "connection-form"
-  | "connection-edit"
-  | "connection-detail"
->;
-
-const navigation: Array<{
-  id: NavigationPage;
-  label: string;
-  icon: typeof ConnectionSignal;
-}> = [
-  { id: "connections", label: "All connections", icon: ConnectionSignal },
-  { id: "clients", label: "Clients", icon: UserMultiple },
-  { id: "favorites", label: "Favorites", icon: Favorite },
-  { id: "recent", label: "Recent", icon: RecentlyViewed },
-  { id: "import-export", label: "Import and export", icon: ImportExport },
-  { id: "credentials", label: "Credentials", icon: Certificate },
-  { id: "settings", label: "Settings", icon: Settings },
-];
-const pageCopy: Record<NavigationPage, { title: string; description: string }> =
-  {
-    connections: {
-      title: "All connections",
-      description:
-        "Find a saved connection by customer, host, username, or tag.",
-    },
-    clients: {
-      title: "Clients",
-      description:
-        "Keep customer organizations and their connection libraries distinct.",
-    },
-    favorites: {
-      title: "Favorites",
-      description: "Your marked connections appear here for fast access.",
-    },
-    recent: {
-      title: "Recent",
-      description:
-        "Launch history will appear here after a connection is opened.",
-    },
-    "import-export": {
-      title: "Import and export",
-      description:
-        "Review RDP files before adding them, and export settings without passwords.",
-    },
-    credentials: {
-      title: "Credentials",
-      description:
-        "Credential references are designed to use your operating system's secure store.",
-    },
-    settings: {
-      title: "Settings",
-      description: "Choose an RDP client, appearance, and library preferences.",
-    },
-  };
-
-function ContextStrip({
-  connection,
-  client,
-}: {
-  connection?: Connection;
-  client?: Client;
-}) {
-  if (!connection && !client) return null;
-  return (
-    <div className="relay-context-strip">
-      <span>Client</span>
-      <strong>{client?.name ?? "Choose a client"}</strong>
-      {connection ? (
-        <>
-          <span>Connection</span>
-          <strong>{connection.name}</strong>
-        </>
-      ) : null}
-    </div>
-  );
-}
 
 function App() {
   const [activePage, setActivePage] = useState<PageId>("connections");
@@ -228,6 +135,8 @@ function App() {
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>();
   const [launchHistory, setLaunchHistory] = useState<LaunchHistory[]>([]);
+  const [recentPage, setRecentPage] = useState(1);
+  const [recentPageSize, setRecentPageSize] = useState(10);
   const [theme, setTheme] = useState<"g10" | "g100">("g10");
   const [credentialMessage, setCredentialMessage] = useState("");
   const [credentialClientId, setCredentialClientId] = useState("");
@@ -238,6 +147,12 @@ function App() {
   const [connectionPageSize, setConnectionPageSize] = useState(10);
   const [editMessage, setEditMessage] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
+  useEffect(() => {
+    // Tauri applies this to the native window frame, including the macOS title bar.
+    void setApplicationTheme(theme === "g100" ? "dark" : "light").catch(
+      () => undefined,
+    );
+  }, [theme]);
   useEffect(() => {
     const loadLibrary = async () => {
       try {
@@ -506,13 +421,13 @@ function App() {
       );
     }
   };
-  const startConnection = async () => {
-    if (!selectedConnection) return;
+  const startConnection = async (connection = selectedConnection) => {
+    if (!connection) return;
     setLaunching(true);
     setLaunchMessage("");
     try {
       const result = await invoke<{ message: string }>("launch_connection", {
-        connectionId: selectedConnection.id,
+        connectionId: connection.id,
       });
       setLaunchMessage(result.message);
     } catch {
@@ -722,23 +637,37 @@ function App() {
                       {row.cells.map((cell) => (
                         <TableCell key={cell.id}>
                           {cell.info.header === "actions" ? (
-                            <Button
-                              kind="ghost"
-                              size="sm"
-                              renderIcon={Edit}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setSelectedConnection(connection);
-                                setDisplay(
-                                  connection.display ||
-                                    "Use RDP client default",
-                                );
-                                setEditMessage("");
-                                go("connection-edit");
-                              }}
-                            >
-                              Edit
-                            </Button>
+                            <div className="relay-table-actions">
+                              <Button
+                                size="sm"
+                                renderIcon={ConnectionSignal}
+                                disabled={launching}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedConnection(connection);
+                                  void startConnection(connection);
+                                }}
+                              >
+                                Connect
+                              </Button>
+                              <Button
+                                kind="ghost"
+                                size="sm"
+                                renderIcon={Edit}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedConnection(connection);
+                                  setDisplay(
+                                    connection.display ||
+                                      "Use RDP client default",
+                                  );
+                                  setEditMessage("");
+                                  go("connection-edit");
+                                }}
+                              >
+                                Edit
+                              </Button>
+                            </div>
                           ) : (
                             cell.value
                           )}
@@ -777,7 +706,71 @@ function App() {
       </Tile>
     );
   const renderPage = () => {
+    const screenProps = {
+      clients,
+      connections,
+      selectedConnection,
+      selectedClientId,
+      formClientId,
+      selectedClient,
+      selectedCredential,
+      launching,
+      launchMessage,
+      importReview,
+      adapterSupport,
+      credentials,
+      vaultStatus,
+      launchHistory,
+      theme,
+      credentialMessage,
+      credentialClientId,
+      display,
+      connectionClientFilter,
+      connectionPage,
+      connectionPageSize,
+      editMessage,
+      backupMessage,
+      query,
+      go,
+      createClient,
+      createConnection,
+      editConnection,
+      startConnection,
+      reviewRdpFile,
+      commitRdpImport,
+      exportSelectedConnection,
+      toggleSelectedConnectionFavorite,
+      saveCredential,
+      copyCredential,
+      createBackup,
+      restoreBackup,
+      setSelectedConnection,
+      setSelectedClientId,
+      setFormClientId,
+      setDisplay,
+      setEditMessage,
+      setQuery,
+      setConnectionClientFilter,
+      setConnectionPage,
+      setConnectionPageSize,
+      setCredentialClientId,
+      setTheme,
+    };
     if (activePage === "client-form")
+      return <ClientFormPage {...screenProps} />;
+    if (activePage === "client-detail")
+      return <ClientDetailPage {...screenProps} />;
+    if (activePage === "clients") return <ClientsPage {...screenProps} />;
+    if (activePage === "connection-form")
+      return <ConnectionFormPage {...screenProps} />;
+    if (activePage === "connection-edit")
+      return <ConnectionEditPage {...screenProps} />;
+    if (activePage === "connection-detail")
+      return <ConnectionDetailPage {...screenProps} />;
+    if (activePage === "connections" || activePage === "favorites")
+      return <ConnectionsPage {...screenProps} mode={activePage} />;
+    const legacyActivePage = activePage as PageId;
+    if (legacyActivePage === "client-form")
       return (
         <>
           <ContextStrip />
@@ -828,7 +821,7 @@ function App() {
           </form>
         </>
       );
-    if (activePage === "client-detail") {
+    if (legacyActivePage === "client-detail") {
       const client = clients.find((item) => item.id === selectedClientId);
       if (!client) return null;
       const clientConnections = connections.filter(
@@ -886,7 +879,7 @@ function App() {
         </section>
       );
     }
-    if (activePage === "connection-form")
+    if (legacyActivePage === "connection-form")
       return (
         <>
           <ContextStrip
@@ -964,7 +957,7 @@ function App() {
           </form>
         </>
       );
-    if (activePage === "connection-edit" && selectedConnection)
+    if (legacyActivePage === "connection-edit" && selectedConnection)
       return (
         <>
           <ContextStrip
@@ -980,9 +973,6 @@ function App() {
                 preference for {selectedConnection.name}.
               </p>
             </div>
-            <Button kind="secondary" onClick={() => go("connection-detail")}>
-              Cancel
-            </Button>
           </div>
           <form className="relay-form" onSubmit={editConnection}>
             <TextInput
@@ -1043,7 +1033,7 @@ function App() {
           </form>
         </>
       );
-    if (activePage === "connection-detail" && selectedConnection)
+    if (legacyActivePage === "connection-detail" && selectedConnection)
       return (
         <>
           <ContextStrip
@@ -1068,19 +1058,6 @@ function App() {
             </div>
             <div className="relay-detail-actions">
               <Button
-                kind="secondary"
-                renderIcon={Edit}
-                onClick={() => {
-                  setDisplay(
-                    selectedConnection.display || "Use RDP client default",
-                  );
-                  setEditMessage("");
-                  go("connection-edit");
-                }}
-              >
-                Edit
-              </Button>
-              <Button
                 kind="ghost"
                 renderIcon={
                   selectedConnection.favorite ? FavoriteFilled : Favorite
@@ -1093,18 +1070,31 @@ function App() {
               </Button>
               <Button
                 renderIcon={ConnectionSignal}
-                onClick={startConnection}
+                onClick={() => void startConnection()}
                 disabled={launching}
               >
                 {launching ? "Preparing connection" : "Connect"}
               </Button>
-              <Button
-                kind="secondary"
-                renderIcon={ImportExport}
-                onClick={exportSelectedConnection}
+              <OverflowMenu
+                aria-label="Connection actions"
+                iconDescription="Connection actions"
+                flipped
               >
-                Export RDP
-              </Button>
+                <OverflowMenuItem
+                  itemText="Edit"
+                  onClick={() => {
+                    setDisplay(
+                      selectedConnection.display || "Use RDP client default",
+                    );
+                    setEditMessage("");
+                    go("connection-edit");
+                  }}
+                />
+                <OverflowMenuItem
+                  itemText="Export RDP"
+                  onClick={exportSelectedConnection}
+                />
+              </OverflowMenu>
             </div>
           </div>
           {launching ? (
@@ -1119,119 +1109,125 @@ function App() {
               subtitle={launchMessage}
             />
           ) : null}
-          <Tabs>
-            <TabList aria-label="Connection sections">
-              <Tab>Overview</Tab>
-              <Tab>Display and resources</Tab>
-              <Tab>Security</Tab>
-            </TabList>
-            <TabPanels>
-              <TabPanel>
-                <Tile>
-                  <dl className="relay-definition-list">
-                    <div>
-                      <dt>Client</dt>
-                      <dd>{selectedClient?.name}</dd>
-                    </div>
-                    <div>
-                      <dt>Host</dt>
-                      <dd>{selectedConnection.host}</dd>
-                    </div>
-                    <div>
-                      <dt>Username</dt>
-                      <dd>{selectedConnection.username || "Not set"}</dd>
-                    </div>
-                    <div>
-                      <dt>Display</dt>
-                      <dd>
-                        {selectedConnection.display || "Use RDP client default"}
-                      </dd>
-                    </div>
-                  </dl>
-                </Tile>
-              </TabPanel>
-              <TabPanel>
-                <InlineNotification
-                  lowContrast
-                  hideCloseButton
-                  kind="info"
-                  title="Adapter support"
-                  subtitle={
-                    adapterSupport
-                      .filter((adapter) => adapter.available)
-                      .map((adapter) => adapter.notes)
-                      .join(" ") ||
-                    "No supported RDP client is currently available on this computer."
-                  }
-                />
-              </TabPanel>
-              <TabPanel>
-                <Stack gap={5}>
+          <div className="relay-detail-tabs">
+            <Tabs>
+              <TabList aria-label="Connection sections">
+                <Tab>Overview</Tab>
+                <Tab>Display and resources</Tab>
+                <Tab>Security</Tab>
+              </TabList>
+              <TabPanels>
+                <TabPanel>
+                  <Tile>
+                    <dl className="relay-definition-list">
+                      <div>
+                        <dt>Client</dt>
+                        <dd>{selectedClient?.name}</dd>
+                      </div>
+                      <div>
+                        <dt>Host</dt>
+                        <dd>{selectedConnection.host}</dd>
+                      </div>
+                      <div>
+                        <dt>Username</dt>
+                        <dd>{selectedConnection.username || "Not set"}</dd>
+                      </div>
+                      <div>
+                        <dt>Display</dt>
+                        <dd>
+                          {selectedConnection.display ||
+                            "Use RDP client default"}
+                        </dd>
+                      </div>
+                    </dl>
+                  </Tile>
+                </TabPanel>
+                <TabPanel>
                   <InlineNotification
                     lowContrast
                     hideCloseButton
-                    kind={vaultStatus?.available ? "success" : "warning"}
-                    title="Credential store"
+                    kind="info"
+                    title="Adapter support"
                     subtitle={
-                      vaultStatus?.message ??
-                      "Credential store status is unavailable outside the desktop app."
+                      adapterSupport
+                        .filter((adapter) => adapter.available)
+                        .map((adapter) => adapter.notes)
+                        .join(" ") ||
+                      "No supported RDP client is currently available on this computer."
                     }
                   />
-                  <Tile>
-                    <Stack gap={5}>
-                      <dl className="relay-definition-list">
+                </TabPanel>
+                <TabPanel>
+                  <Stack gap={5}>
+                    <InlineNotification
+                      lowContrast
+                      hideCloseButton
+                      kind={vaultStatus?.available ? "success" : "warning"}
+                      title="Credential store"
+                      subtitle={
+                        vaultStatus?.message ??
+                        "Credential store status is unavailable outside the desktop app."
+                      }
+                    />
+                    <Tile>
+                      <Stack gap={5}>
+                        <dl className="relay-definition-list">
+                          <div>
+                            <dt>Password</dt>
+                            <dd>
+                              {selectedConnection.credentialId
+                                ? "Saved securely"
+                                : "Not saved"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Credential</dt>
+                            <dd>
+                              {selectedCredential?.label ??
+                                (selectedConnection.credentialId
+                                  ? "Saved credential"
+                                  : "None")}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Username</dt>
+                            <dd>{selectedConnection.username || "Not set"}</dd>
+                          </div>
+                        </dl>
                         <div>
-                          <dt>Password</dt>
-                          <dd>
+                          <Button
+                            kind="secondary"
+                            renderIcon={Edit}
+                            onClick={() => {
+                              setDisplay(
+                                selectedConnection.display ||
+                                  "Use RDP client default",
+                              );
+                              setEditMessage("");
+                              go("connection-edit");
+                            }}
+                          >
                             {selectedConnection.credentialId
-                              ? "Saved securely"
-                              : "Not saved"}
-                          </dd>
+                              ? "Change password"
+                              : "Set password"}
+                          </Button>
                         </div>
-                        <div>
-                          <dt>Credential</dt>
-                          <dd>
-                            {selectedCredential?.label ??
-                              (selectedConnection.credentialId
-                                ? "Saved credential"
-                                : "None")}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Username</dt>
-                          <dd>{selectedConnection.username || "Not set"}</dd>
-                        </div>
-                      </dl>
-                      <div>
-                        <Button
-                          kind="secondary"
-                          renderIcon={Edit}
-                          onClick={() => {
-                            setDisplay(
-                              selectedConnection.display ||
-                                "Use RDP client default",
-                            );
-                            setEditMessage("");
-                            go("connection-edit");
-                          }}
-                        >
-                          {selectedConnection.credentialId
-                            ? "Change password"
-                            : "Set password"}
-                        </Button>
-                      </div>
-                    </Stack>
-                  </Tile>
-                </Stack>
-              </TabPanel>
-            </TabPanels>
-          </Tabs>
+                      </Stack>
+                    </Tile>
+                  </Stack>
+                </TabPanel>
+              </TabPanels>
+            </Tabs>
+          </div>
         </>
       );
-    const page = pageCopy[activePage as NavigationPage];
-    if (activePage === "connections" || activePage === "favorites") {
+    const page = pageCopy[legacyActivePage as NavigationPage];
+    if (
+      legacyActivePage === "connections" ||
+      legacyActivePage === "favorites"
+    ) {
       const rows =
-        activePage === "favorites"
+        legacyActivePage === "favorites"
           ? visibleConnections.filter((connection) => connection.favorite)
           : visibleConnections.filter(
               (connection) =>
@@ -1319,7 +1315,7 @@ function App() {
         </section>
       );
     }
-    if (activePage === "clients")
+    if (legacyActivePage === "clients")
       return (
         <>
           <div className="relay-detail-heading">
@@ -1593,7 +1589,21 @@ function App() {
           ) : null}
         </section>
       );
-    if (activePage === "recent")
+    if (activePage === "recent") {
+      const recentPageCount = Math.max(
+        1,
+        Math.ceil(launchHistory.length / recentPageSize),
+      );
+      const currentRecentPage = Math.min(recentPage, recentPageCount);
+      const recentEntries = launchHistory.slice(
+        (currentRecentPage - 1) * recentPageSize,
+        currentRecentPage * recentPageSize,
+      );
+      const formatLaunchTime = (occurredAt: number) =>
+        new Intl.DateTimeFormat(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        }).format(new Date(occurredAt * 1000));
       return (
         <section className="relay-list-page" aria-labelledby="page-title">
           <div className="relay-page-heading">
@@ -1607,52 +1617,67 @@ function App() {
             </p>
           </div>
           {launchHistory.length ? (
-            <div className="relay-table">
-              <DataTable
-                rows={launchHistory.map((entry) => ({
-                  id: String(entry.id),
-                  connection:
-                    connections.find(
-                      (connection) => connection.id === entry.connectionId,
-                    )?.name ?? "Deleted connection",
-                  adapter: entry.adapter,
-                  outcome: entry.success ? "Started" : "Not started",
-                }))}
-                headers={[
-                  { key: "connection", header: "Connection" },
-                  { key: "adapter", header: "RDP client" },
-                  { key: "outcome", header: "Outcome" },
-                ]}
-              >
-                {({
-                  rows,
-                  headers,
-                  getHeaderProps,
-                  getRowProps,
-                  getTableProps,
-                }) => (
-                  <Table {...getTableProps()} aria-label="Recent launches">
-                    <TableHead>
-                      <TableRow>
-                        {headers.map((header) => (
-                          <TableHeader {...getHeaderProps({ header })}>
-                            {header.header}
-                          </TableHeader>
-                        ))}
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {rows.map((row) => (
-                        <TableRow {...getRowProps({ row })}>
-                          {row.cells.map((cell) => (
-                            <TableCell key={cell.id}>{cell.value}</TableCell>
+            <div className="relay-list-body">
+              <div className="relay-table">
+                <DataTable
+                  rows={recentEntries.map((entry) => ({
+                    id: String(entry.id),
+                    connection:
+                      connections.find(
+                        (connection) => connection.id === entry.connectionId,
+                      )?.name ?? "Deleted connection",
+                    adapter: entry.adapter,
+                    launchedAt: formatLaunchTime(entry.occurredAt),
+                    outcome: entry.success ? "Started" : "Not started",
+                  }))}
+                  headers={[
+                    { key: "connection", header: "Connection" },
+                    { key: "adapter", header: "RDP client" },
+                    { key: "launchedAt", header: "Launched" },
+                    { key: "outcome", header: "Outcome" },
+                  ]}
+                >
+                  {({
+                    rows,
+                    headers,
+                    getHeaderProps,
+                    getRowProps,
+                    getTableProps,
+                  }) => (
+                    <Table {...getTableProps()} aria-label="Recent launches">
+                      <TableHead>
+                        <TableRow>
+                          {headers.map((header) => (
+                            <TableHeader {...getHeaderProps({ header })}>
+                              {header.header}
+                            </TableHeader>
                           ))}
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                )}
-              </DataTable>
+                      </TableHead>
+                      <TableBody>
+                        {rows.map((row) => (
+                          <TableRow {...getRowProps({ row })}>
+                            {row.cells.map((cell) => (
+                              <TableCell key={cell.id}>{cell.value}</TableCell>
+                            ))}
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </DataTable>
+              </div>
+              <Pagination
+                className="relay-list-pagination"
+                totalItems={launchHistory.length}
+                page={currentRecentPage}
+                pageSize={recentPageSize}
+                pageSizes={[10, 20, 50]}
+                onChange={({ page, pageSize }) => {
+                  setRecentPage(page);
+                  setRecentPageSize(pageSize);
+                }}
+              />
             </div>
           ) : (
             <Tile className="relay-empty-state">
@@ -1667,6 +1692,7 @@ function App() {
           )}
         </section>
       );
+    }
     if (activePage === "settings")
       return (
         <section className="relay-list-page" aria-labelledby="page-title">
@@ -1714,6 +1740,11 @@ function App() {
                       hideCloseButton
                       lowContrast
                       kind={adapter.available ? "success" : "info"}
+                      className={
+                        adapter.available
+                          ? undefined
+                          : "relay-ghost-notification"
+                      }
                       title={adapter.label}
                       subtitle={`${adapter.available ? "Available." : "Not available."} ${adapter.notes}`}
                     />
@@ -1739,11 +1770,13 @@ function App() {
                     credential store.
                   </p>
                 </div>
-                <ButtonSet>
+                <ButtonSet className="relay-backup-actions">
                   <Button onClick={() => void createBackup()}>
                     Download backup
                   </Button>
                   <FileUploaderButton
+                    buttonKind="tertiary"
+                    className="relay-restore-backup"
                     labelText="Restore backup"
                     accept={[".json", ".relay-backup.json"]}
                     onChange={(event) => {
@@ -1797,35 +1830,46 @@ function App() {
     );
   };
   return (
-    <Theme theme={theme}>
-      <Header aria-label="Relay">
-        <Tag className="relay-stage-tag" type="blue">
-          Stage 5 — Public beta
-        </Tag>
-      </Header>
-      <SideNav aria-label="Primary navigation" expanded isPersistent>
-        <SideNavItems>
-          {navigation.map((item) => (
-            <SideNavLink
-              href={`#${item.id}`}
-              isActive={activePage === item.id}
-              key={item.id}
-              onClick={() => go(item.id)}
-              renderIcon={item.icon}
-            >
-              {item.label}
-            </SideNavLink>
-          ))}
-        </SideNavItems>
-      </SideNav>
-      <Content id="main-content" className="relay-content">
-        <Grid fullWidth>
-          <Column sm={4} md={8} lg={16} xlg={16}>
-            <Stack gap={7}>{renderPage()}</Stack>
-          </Column>
-        </Grid>
-      </Content>
-    </Theme>
+    <FeatureFlags enableV12DynamicFloatingStyles>
+      <Theme theme={theme}>
+        <Header aria-label="Relay" className="relay-header">
+          <HeaderName
+            href="#connections"
+            onClick={() => go("connections")}
+            prefix=""
+          >
+            Relay RDP Manager
+          </HeaderName>
+          <Tag className="relay-stage-tag" type="blue">
+            Stage 5 — Public Beta
+          </Tag>
+        </Header>
+        <SideNav aria-label="Primary navigation" expanded isPersistent>
+          <SideNavItems>
+            {navigation.map((item) => (
+              <SideNavLink
+                href={`#${item.id}`}
+                isActive={activePage === item.id}
+                key={item.id}
+                onClick={() => go(item.id)}
+                renderIcon={item.icon}
+              >
+                {item.label}
+              </SideNavLink>
+            ))}
+          </SideNavItems>
+        </SideNav>
+        <Content id="main-content" className="relay-content">
+          <Grid fullWidth>
+            <Column sm={4} md={8} lg={16} xlg={16}>
+              <Stack className="relay-page-frame" gap={7}>
+                {renderPage()}
+              </Stack>
+            </Column>
+          </Grid>
+        </Content>
+      </Theme>
+    </FeatureFlags>
   );
 }
 export default App;
