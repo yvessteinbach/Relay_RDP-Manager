@@ -139,9 +139,30 @@ type UpdateCheck = {
 type UpdateProgress = { downloaded: number; total?: number };
 
 const FALLBACK_VERSION = "0.1.0";
+const THEME_STORAGE_KEY = "relay.theme";
+
+const getStoredTheme = (): "g10" | "g100" =>
+  window.localStorage.getItem(THEME_STORAGE_KEY) === "g100" ? "g100" : "g10";
 
 const formatDownloadSize = (bytes: number) =>
   `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+const formatRdpImportExclusions = (review: RdpReview) => {
+  const parts = [
+    review.warnings.length
+      ? `${review.warnings.length} sensitive setting${
+          review.warnings.length === 1 ? " was" : "s were"
+        } excluded`
+      : "",
+    review.unsupportedKeys.length
+      ? `${review.unsupportedKeys.length} client-specific setting${
+          review.unsupportedKeys.length === 1 ? " was" : "s were"
+        } not imported`
+      : "",
+  ].filter(Boolean);
+
+  return `Relay imported only the connection target, account, and display choice. ${parts.join("; ")}.`;
+};
 
 const updateCheckErrorMessage = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
@@ -168,7 +189,7 @@ function App() {
   const [launchHistory, setLaunchHistory] = useState<LaunchHistory[]>([]);
   const [recentPage, setRecentPage] = useState(1);
   const [recentPageSize, setRecentPageSize] = useState(10);
-  const [theme, setTheme] = useState<"g10" | "g100">("g10");
+  const [theme, setTheme] = useState<"g10" | "g100">(getStoredTheme);
   const [credentialMessage, setCredentialMessage] = useState("");
   const [credentialClientId, setCredentialClientId] = useState("");
   const [display, setDisplay] = useState("Use RDP client default");
@@ -184,6 +205,7 @@ function App() {
   });
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress>();
   useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
     // Tauri applies this to the native window frame, including the macOS title bar.
     void setApplicationTheme(theme === "g100" ? "dark" : "light").catch(
       () => undefined,
@@ -1546,13 +1568,8 @@ function App() {
                         hideCloseButton
                         lowContrast
                         kind="warning"
-                        title="Some settings were excluded"
-                        subtitle={[
-                          ...importReview.warnings,
-                          ...importReview.unsupportedKeys.map(
-                            (key) => `Unsupported setting: ${key}.`,
-                          ),
-                        ].join(" ")}
+                        title="Some RDP settings were not imported"
+                        subtitle={formatRdpImportExclusions(importReview)}
                       />
                     ) : null}
                     <Button onClick={() => void commitRdpImport()}>
